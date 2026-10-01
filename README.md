@@ -1,0 +1,47 @@
+# Model Playground
+
+A native macOS app for running, chatting with, comparing and benchmarking open-source LLMs locally on Apple Silicon.
+
+- **Chat** in a Claude-style interface: streaming replies, Markdown with tables and code blocks, collapsible reasoning for thinking models, file and PDF attachments (drag and drop), system prompt presets, chat history with search, export to Markdown.
+- **Compare** up to 4 models on one prompt: answers side by side, charts for speed, time to first token, output tokens, tokenizer efficiency, total time and memory, plus an **AI judge** that scores accuracy, helpfulness and clarity. **Blind mode** hides and shuffles names until you vote.
+- **Benchmarks**: a 13-question auto-graded quiz (math, reasoning, knowledge, coding, instruction following, language) and a **long-context needle-in-a-haystack test** (1K to 64K tokens, 3 depths) with heatmaps and speed and memory vs context-length curves.
+- **Leaderboard** across every chat, comparison and benchmark: speed, latency, judge quality, votes, quiz score and reliable context length.
+- **Model library**: about 85 verified models from 0.3 GB to 130 GB (Qwen 3.5/3.6, Gemma 4, Llama 3/4, DeepSeek R1/V4, Mistral, Phi, GLM, gpt-oss and more), each with RAM fit estimates for your Mac, plus Hugging Face search, a choosable models folder and the Hugging Face cache.
+- **Two engines**: [mlx-lm](https://github.com/ml-explore/mlx-lm) (fast, most architectures) and [AirLLM](https://github.com/lyogavin/airllm) (streams full-precision Llama models from disk, so models larger than RAM can run slowly; prompts are capped at 512 tokens).
+- **Long context controls**: 8-bit or 4-bit KV cache quantization, or a sliding context window.
+
+## Requirements
+
+- Apple Silicon Mac, macOS 14 or later
+- Swift toolchain (Xcode or the Command Line Tools)
+- Python 3.10+ with `mlx-lm airllm fastapi uvicorn psutil`. The app can create this environment for you with one click on first launch.
+
+## Build and run
+
+```bash
+./build.sh
+open "build/Model Playground.app"
+```
+
+## Tests
+
+```bash
+./scripts/run_tests.sh
+```
+
+This runs `tests/test_backend_e2e.py` (23 checks against a real server and real models) and the app's `--selftest` mode (23 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `App/` | SwiftUI app (Swift Package) |
+| `backend/server.py` | Local FastAPI engine: model discovery, downloads, streaming chat, judge, benchmarks, tokenizer counts |
+| `tests/` | Backend end-to-end test |
+| `scripts/` | Test runner and icon generator |
+
+The engine listens only on `127.0.0.1`, on a free port chosen at launch. Chats, run history and benchmark results are stored in `~/Library/Application Support/ModelPlayground`.
+
+## Memory guide
+
+macOS lets the GPU use roughly two thirds of unified memory. On a 16 GB Mac, 4-bit models up to about 8 GB (14B parameters) fit; for long chats, prefer 7–9B models with a quantized KV cache. The library marks larger models with the Mac memory size they need.
