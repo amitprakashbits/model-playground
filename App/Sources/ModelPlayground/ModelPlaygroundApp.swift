@@ -6,7 +6,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         if AppState.isSelfTest {
-            Task { @MainActor in await SelfTest.run(AppState.shared) }
+            Task { @MainActor in
+                if let model = ProcessInfo.processInfo.environment["MP_TEST_MODEL"] {
+                    await SelfTest.runModel(AppState.shared, needle: model)
+                } else {
+                    await SelfTest.run(AppState.shared)
+                }
+            }
         }
     }
 

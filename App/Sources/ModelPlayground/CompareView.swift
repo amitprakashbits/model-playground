@@ -27,6 +27,7 @@ struct CompareView: View {
         }
         .background(Theme.background)
         .navigationTitle("Compare")
+        .onAppear(perform: state.prefillCompare)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Toggle(isOn: Bindable(state).compareBlind) { Label("Blind mode", systemImage: state.compareBlind ? "eye.slash" : "eye") }
@@ -79,6 +80,11 @@ struct CompareView: View {
     private var composer: some View {
         @Bindable var state = state
         return VStack(spacing: 6) {
+            if state.compareColumns.isEmpty && !state.comparePrompt.isEmpty {
+                Label("Add at least one model above to send this prompt.", systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if !state.lastComparePrompt.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "text.bubble").foregroundStyle(Theme.secondaryText)
@@ -88,7 +94,8 @@ struct CompareView: View {
                 .font(.caption)
             }
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("One prompt, sent to every model...", text: $state.comparePrompt, axis: .vertical)
+                TextField(state.compareColumns.isEmpty ? "Add a model above first, then type a prompt..." : "One prompt, sent to every model...",
+                          text: $state.comparePrompt, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .lineLimit(1...6)

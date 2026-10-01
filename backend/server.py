@@ -30,6 +30,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+# Xet transfers buffer whole files before writing them, which hides download progress.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 APP_ID = "model-playground"
 VERSION = "1.0.0"
 HF_CACHE = Path(os.environ.get("HF_HUB_CACHE", Path.home() / ".cache" / "huggingface" / "hub"))
@@ -123,14 +126,36 @@ CATALOG = [
     ("Powerful (32 GB+)", "mlx-community/gemma-4-26B-A4B-it-qat-OptiQ-4bit", "26B MoE", 21.9, 262144, "mlx", "Gemma 4 MoE, 256K context"),
     ("Powerful (32 GB+)", "mlx-community/gemma-4-31B-it-qat-OptiQ-4bit", "31B", 23.6, 262144, "mlx", "Gemma 4 flagship dense"),
     ("Powerful (32 GB+)", "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit", "35B MoE", 24.7, 262144, "mlx", "Newest Qwen MoE, fast"),
+    ("Powerful (24 GB+)", "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B", "35B MoE", 14.9, 262144, "mlx", "Pruned Qwen 3.6 MoE, smartest that fits 24 GB"),
+    ("Powerful (24 GB+)", "mlx-community/Devstral-Small-2507-4bit", "24B", 13.3, 131072, "mlx", "Mistral's agentic coding model"),
+    ("Powerful (24 GB+)", "mlx-community/Qwen3.5-27B-4bit", "27B", 16.1, 262144, "mlx", "Qwen 3.5 dense 27B"),
+    ("Powerful (32 GB+)", "mlx-community/Qwen3.5-35B-A3B-4bit", "35B MoE", 20.4, 262144, "mlx", "Qwen 3.5 MoE, fast and smart"),
+    ("Powerful (32 GB+)", "mlx-community/Seed-OSS-36B-Instruct-4bit", "36B", 20.3, 524288, "mlx", "ByteDance Seed, 512K context"),
     ("Frontier (64 GB+)", "mlx-community/Llama-3.3-70B-Instruct-4bit", "70B", 39.7, 131072, "mlx", "Meta Llama 3.3 70B"),
     ("Frontier (64 GB+)", "mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit", "70B", 39.7, 131072, "mlx", "DeepSeek R1 distill, 70B"),
     ("Frontier (64 GB+)", "mlx-community/Qwen2.5-72B-Instruct-4bit", "72B", 40.9, 32768, "mlx", "Qwen 2.5 72B"),
     ("Frontier (64 GB+)", "mlx-community/GLM-4.5-Air-4bit", "106B MoE", 60.2, 131072, "mlx", "Zhipu GLM 4.5 Air"),
     ("Frontier (64 GB+)", "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit", "109B MoE", 61.1, 10485760, "mlx", "Meta Llama 4 Scout, 10M context"),
     ("Frontier (64 GB+)", "mlx-community/gpt-oss-120b-MXFP4-Q4", "120B MoE", 62.4, 131072, "mlx", "OpenAI gpt-oss 120B"),
+    ("Meta Muse", "mlx-community/Muse-Glimmer-30B-mxfp4", "30B", 18.6, 131072, "mlx", "Meta Muse Glimmer, MXFP4, smallest build"),
+    ("Meta Muse", "mlx-community/Muse-Glimmer-30B-4bit", "30B", 19.4, 131072, "mlx", "Meta Muse Glimmer 30B, 128K context"),
+    ("Meta Muse", "mlx-community/Muse-Glimmer-30B-8bit", "30B", 33.4, 131072, "mlx", "Meta Muse Glimmer, near full quality"),
+    ("Meta Muse", "mlx-community/Muse-Glimmer-30B-bf16", "30B", 59.6, 131072, "mlx", "Meta Muse Glimmer, full precision"),
+    ("Frontier (64 GB+)", "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", "80B MoE", 44.9, 262144, "mlx", "Qwen3-Next, hybrid attention, very fast"),
+    ("Frontier (64 GB+)", "mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit", "80B MoE", 44.9, 262144, "mlx", "Qwen3-Next reasoning"),
+    ("Frontier (64 GB+)", "mlx-community/Hermes-4-70B-4bit", "70B", 39.7, 131072, "mlx", "Nous Hermes 4 on Llama 3.1 70B"),
+    ("Frontier (96 GB+)", "mlx-community/Qwen3.5-122B-A10B-4bit", "122B MoE", 69.6, 262144, "mlx", "Qwen 3.5 large MoE"),
     ("Frontier (128 GB+)", "mlx-community/DeepSeek-V4-Flash-2bit-DQ", "MoE", 96.5, 1048576, "mlx", "DeepSeek V4 Flash, 1M context, 2-bit"),
-    ("Frontier (128 GB+)", "mlx-community/Qwen3-235B-A22B-4bit", "235B MoE", 132.3, 40960, "mlx", "Qwen 3 flagship"),
+    ("Frontier (192 GB+)", "mlx-community/MiniMax-M2-4bit", "230B MoE", 128.7, 196608, "mlx", "MiniMax M2, strong agentic coder"),
+    ("Frontier (192 GB+)", "mlx-community/Qwen3-235B-A22B-Instruct-2507-4bit", "235B MoE", 132.3, 262144, "mlx", "Qwen 3 flagship, 2507 update"),
+    ("Frontier (192 GB+)", "mlx-community/Qwen3-235B-A22B-Thinking-2507-4bit", "235B MoE", 132.3, 262144, "mlx", "Qwen 3 flagship reasoning"),
+    ("Frontier (192 GB+)", "mlx-community/DeepSeek-V4-Flash-4bit", "MoE", 151.5, 1048576, "mlx", "DeepSeek V4 Flash, 1M context"),
+    ("Frontier (256 GB+)", "mlx-community/GLM-4.6-4bit", "355B MoE", 198.6, 202752, "mlx", "Zhipu GLM 4.6 flagship"),
+    ("Frontier (256 GB+)", "mlx-community/Qwen3.5-397B-A17B-4bit", "397B MoE", 223.9, 262144, "mlx", "Qwen 3.5 flagship"),
+    ("Frontier (256 GB+)", "mlx-community/Llama-4-Maverick-17B-128E-Instruct-4bit", "400B MoE", 225.9, 1048576, "mlx", "Meta Llama 4 Maverick"),
+    ("Frontier (512 GB)", "mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit", "480B MoE", 270.1, 262144, "mlx", "Qwen's largest coding model"),
+    ("Frontier (512 GB)", "mlx-community/DeepSeek-R1-0528-4bit", "671B MoE", 377.6, 163840, "mlx", "Full DeepSeek R1, top open reasoning"),
+    ("Frontier (512 GB)", "mlx-community/DeepSeek-V3.1-4bit", "671B MoE", 377.6, 163840, "mlx", "Full DeepSeek V3.1"),
     # AirLLM: full-precision models streamed from disk. Prompt is capped at 512 tokens.
     ("AirLLM", "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "1.1B", 2.20, 2048, "airllm", "Layer-streaming demo (512-token prompt cap)"),
     ("AirLLM", "garage-bAInd/Platypus2-7B", "7B", 13.5, 4096, "airllm", "Slow disk streaming (512-token prompt cap)"),
@@ -371,6 +396,10 @@ class Worker:
             messages = [{"role": "system", "content": req.system_prompt.strip()}] + messages
         prompt = self.build_prompt(messages, thinking=req.thinking)
         emit = lambda t: out.put({"type": "token", "text": t})
+        if prompt.rstrip().endswith("<think>"):
+            # Templates such as Qwen 3.5 open the reasoning block in the prompt itself, so the
+            # model only ever emits the closing tag. Emit the opening tag so clients can fold it.
+            emit("<think>\n")
         if req.engine == "mlx":
             _, stats = self._generate_mlx(req, prompt, emit)
         else:
@@ -473,10 +502,11 @@ class Worker:
                 {"role": "system", "content": JUDGE_SYSTEM},
                 {"role": "user", "content": JUDGE_TEMPLATE.format(prompt=req.prompt[:4000], answer=answer or "(empty)")},
             ]
-            # Reasoning models judge noticeably better when they may think first.
-            prompt = self.build_prompt(messages, thinking=True)
+            # The prompt makes the judge reason through a reference answer, so built-in thinking is off:
+            # long-thinking models (Qwen 3.5) otherwise exhaust the budget before writing the verdict.
+            prompt = self.build_prompt(messages, thinking=False)
             jr = ChatRequest(model_path=req.judge_path, engine=req.engine, messages=[], temperature=0.0,
-                             max_tokens=1500)
+                             max_tokens=1200)
             if req.engine == "mlx":
                 text, _ = self._generate_mlx(jr, prompt, lambda t: None)
             else:
@@ -591,7 +621,7 @@ Reply with exactly one JSON object and nothing else:
 
 
 def parse_judgement(text: str) -> dict:
-    text = THINK_RE.sub("", text)
+    text = THINK_RE.sub("", text).split("</think>")[-1]  # some templates open <think> in the prompt
     result = {"accuracy": 0.0, "helpfulness": 0.0, "clarity": 0.0, "overall": 0.0, "verdict": "",
               "raw": text.strip()[:600]}
     m = re.search(r"\{.*\}", text, re.S)

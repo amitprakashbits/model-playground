@@ -1,12 +1,14 @@
 # Model Playground
 
+![Chat](docs/screenshots/m1-chat.png)
+
 A native macOS app for running, chatting with, comparing and benchmarking open-source LLMs locally on Apple Silicon.
 
 - **Chat** in a Claude-style interface: streaming replies, Markdown with tables and code blocks, collapsible reasoning for thinking models, file and PDF attachments (drag and drop), system prompt presets, chat history with search, export to Markdown.
 - **Compare** up to 4 models on one prompt: answers side by side, charts for speed, time to first token, output tokens, tokenizer efficiency, total time and memory, plus an **AI judge** that scores accuracy, helpfulness and clarity. **Blind mode** hides and shuffles names until you vote.
 - **Benchmarks**: a 13-question auto-graded quiz (math, reasoning, knowledge, coding, instruction following, language) and a **long-context needle-in-a-haystack test** (1K to 64K tokens, 3 depths) with heatmaps and speed and memory vs context-length curves.
 - **Leaderboard** across every chat, comparison and benchmark: speed, latency, judge quality, votes, quiz score and reliable context length.
-- **Model library**: about 85 verified models from 0.3 GB to 130 GB (Qwen 3.5/3.6, Gemma 4, Llama 3/4, DeepSeek R1/V4, Mistral, Phi, GLM, gpt-oss and more), each with RAM fit estimates for your Mac, plus Hugging Face search, a choosable models folder and the Hugging Face cache.
+- **Model library**: about 100 verified models from 0.3 GB to 378 GB (Qwen 3.5/3.6, Qwen3-Next, Gemma 4, Meta Muse Glimmer, Llama 3/4, DeepSeek R1/V3.1/V4, Kimi-class MoEs, GLM 4.6, MiniMax M2, Mistral, Phi, gpt-oss and more), each with RAM fit estimates for your Mac, plus Hugging Face search, a choosable models folder and the Hugging Face cache.
 - **Two engines**: [mlx-lm](https://github.com/ml-explore/mlx-lm) (fast, most architectures) and [AirLLM](https://github.com/lyogavin/airllm) (streams full-precision Llama models from disk, so models larger than RAM can run slowly; prompts are capped at 512 tokens).
 - **Long context controls**: 8-bit or 4-bit KV cache quantization, or a sliding context window.
 
@@ -25,11 +27,19 @@ open "build/Model Playground.app"
 
 ## Tests
 
+See **[docs/TEST_RESULTS.md](docs/TEST_RESULTS.md)** for the latest results, a Qwen3.5-9B vs Qwen3-4B benchmark on a 16 GB Mac, bugs found during testing, and screenshots of every screen.
+
 ```bash
 ./scripts/run_tests.sh
 ```
 
-This runs `tests/test_backend_e2e.py` (23 checks against a real server and real models) and the app's `--selftest` mode (23 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
+To test one model end to end inside the app (chat, reasoning, document Q&A, benchmarks to 32K tokens and a judged head-to-head):
+
+```bash
+MP_TEST_MODEL=Qwen3.5-9B "build/Model Playground.app/Contents/MacOS/ModelPlayground" --selftest
+```
+
+`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (23 checks against a real server and real models) and the app's `--selftest` mode (23 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
 
 ## Layout
 

@@ -163,7 +163,7 @@ struct GenParams: Codable, Hashable {
     var systemPrompt: String = ""
     var temperature: Double = 0.7
     var topP: Double = 1.0
-    var maxTokens: Int = 2048
+    var maxTokens: Int = 4096
     var contextLimit: Int = 0
     var kvBits: Int = 0
     var thinking: Bool = true
@@ -257,7 +257,11 @@ enum Fit {
 func formatContext(_ tokens: Int) -> String {
     if tokens <= 0 { return "?" }
     if tokens >= 1_000_000 { return "\(tokens / 1_000_000)M" }
-    if tokens >= 1000 { return "\(Int((Double(tokens) / 1024).rounded()))K" }
+    if tokens >= 1000 {
+        // Powers of two (32768) and round thousands (32000) both read as "32K".
+        let k = tokens % 1024 == 0 ? tokens / 1024 : Int((Double(tokens) / 1000).rounded())
+        return "\(k)K"
+    }
     return "\(tokens)"
 }
 
@@ -269,7 +273,14 @@ func formatCount(_ n: Int) -> String {
 
 /// Splits a reply into an optional reasoning part (<think>...</think>) and the visible answer.
 func splitReasoning(_ text: String) -> (reasoning: String?, answer: String, thinking: Bool) {
-    guard let start = text.range(of: "<think>") else { return (nil, text, false) }
+    guard let start = text.range(of: "<think>") else {
+        // A closing tag without an opening one: everything before it is reasoning.
+        if let end = text.range(of: "</think>") {
+            let reasoning = String(text[..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (reasoning.isEmpty ? nil : reasoning, String(text[end.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines), false)
+        }
+        return (nil, text, false)
+    }
     let before = String(text[..<start.lowerBound])
     let after = text[start.upperBound...]
     if let end = after.range(of: "</think>") {

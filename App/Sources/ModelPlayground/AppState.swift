@@ -619,6 +619,15 @@ final class AppState {
 
     func removeCompare(_ id: UUID) { compareColumns.removeAll { $0.id == id } }
 
+    /// Starts an empty comparison with up to 3 installed models, largest first.
+    func prefillCompare() {
+        guard compareColumns.isEmpty else { return }
+        let picks = selections.filter { $0.engine == "mlx" && Fit.estimate(sizeGb: $0.model.sizeGb, ramGb: ramGb) != .tooBig }
+            .sorted { $0.model.sizeBytes > $1.model.sizeBytes }
+            .prefix(3)
+        for p in picks { addCompare(p) }
+    }
+
     func markBest(_ id: UUID) {
         if compareBlind { compareRevealed = true }
         for i in compareColumns.indices { compareColumns[i].isBest = compareColumns[i].id == id && !compareColumns[i].isBest }

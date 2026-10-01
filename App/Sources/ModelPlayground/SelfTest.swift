@@ -31,6 +31,119 @@ enum SelfTest {
         return cond()
     }
 
+    /// Focused test of one model, selected with MP_TEST_MODEL (a substring of its folder name).
+    static func runModel(_ state: AppState, needle: String) async {
+        try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("chats.json"))
+        try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("runs.json"))
+        try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("benchmarks.json"))
+        await state.boot()
+        check("engine starts", state.serverState == .running)
+        guard let target = state.selections.first(where: { $0.engine == "mlx" && $0.model.name.contains(needle) }) else {
+            check("model \(needle) is installed", false, state.models.map(\.name).joined(separator: ", "))
+            return finish()
+        }
+        check("model is installed", true, "\(target.model.name), \(target.model.sizeLabel), \(formatContext(target.model.context)) context")
+        let rival = state.selections.first { $0.engine == "mlx" && $0.model.name.contains("Qwen3-4B-Instruct-2507") }
+
+        func lastReply(_ id: UUID) -> ChatMessage? { state.sessions.first { $0.id == id }?.messages.last }
+        func describe(_ m: ChatMessage?) -> String {
+            guard let m else { return "none" }
+            if let e = m.error { return "error: \(e)" }
+            let st = m.stats.map { String(format: "%.1f tok/s, %d tokens, %.2fs first token, %.1f GB", $0.tokensPerSecond, $0.generationTokens, $0.timeToFirstToken, $0.peakMemoryGb) } ?? ""
+            return "\(st) | \(splitReasoning(m.content).answer.prefix(120).replacingOccurrences(of: "\n", with: " "))"
+        }
+
+        // 1. Chat without thinking.
+        state.params = GenParams(temperature: 0.3, maxTokens: 1024, thinking: false)
+        let chat = state.newChat(with: target)
+        state.send("In two sentences, what makes a good API design?", in: chat)
+        _ = await wait(600) { state.generatingSession == nil }
+        let r1 = lastReply(chat)
+        check("chat (no thinking)", r1?.error == nil && !(r1?.content.isEmpty ?? true), describe(r1))
+
+        // 2. Reasoning with thinking on.
+        state.params.thinking = true
+        state.params.maxTokens = 8000
+        state.send("A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Give the final answer in cents.", in: chat)
+        _ = await wait(1500) { state.generatingSession == nil }
+        let r2 = lastReply(chat)
+        let parts = splitReasoning(r2?.content ?? "")
+        check("reasoning is folded into a thought block", (parts.reasoning?.count ?? 0) > 50 && !parts.thinking,
+              "thought \(wordCount(parts.reasoning ?? "")) words")
+        check("reasoning reaches a correct final answer", r2?.stats?.finishReason != "length" && parts.answer.contains("5")
+              && !parts.answer.contains("10 cents"), describe(r2))
+
+        // 3. Rich formatting.
+        state.params.thinking = false
+        state.send("Compare Python, Rust and Go for backend services in a markdown table (columns: speed, safety, learning curve), then give a 3-bullet recommendation.", in: chat)
+        _ = await wait(600) { state.generatingSession == nil }
+        let r3 = lastReply(chat)
+        check("markdown table answer", (r3?.content.contains("|") ?? false), describe(r3))
+        state.sidebarSelection = .chat(chat)
+        await snapshot("m1-chat")
+
+        // 4. Long document Q&A through an attachment (about 12K tokens).
+        var doc = ""
+        for i in 0..<220 {
+            doc += "Section \(i + 1). The regional office filed its routine operations summary covering staffing, supplies and maintenance schedules for the quarter. "
+            if i == 157 { doc += "Note for auditors: the backup generator at the Lisbon site was serviced on 14 March by technician Mara Okafor. " }
+        }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("ops-report.txt")
+        try? doc.write(to: file, atomically: true, encoding: .utf8)
+        state.params.kvBits = 8
+        let docChat = state.newChat(with: target)
+        state.addAttachments([file], to: docChat)
+        state.send("Who serviced the backup generator at the Lisbon site, and on what date?", in: docChat)
+        _ = await wait(900) { state.generatingSession == nil }
+        let r4 = lastReply(docChat)
+        let a4 = r4?.content.lowercased() ?? ""
+        check("long document Q&A (8-bit KV cache)", a4.contains("okafor") && a4.contains("14"),
+              "prompt \(r4?.stats?.promptTokens ?? 0) tokens · " + describe(r4))
+        state.params.kvBits = 0
+        state.sidebarSelection = .chat(docChat)
+        await snapshot("m2-document")
+
+        // 5. Benchmarks up to 32K tokens (MP_SKIP_BENCH=1 skips this slow part).
+        if ProcessInfo.processInfo.environment["MP_SKIP_BENCH"] == nil {
+        state.benchSelections = [target] + (rival.map { [$0] } ?? [])
+        state.benchSuites = ["quick", "needle"]
+        state.benchMaxContext = 32000
+        state.sidebarSelection = .benchmarks
+        state.runBenchmarks()
+        _ = await wait(3600) { !state.isBenchmarking }
+        for run in state.benchmarkRuns.prefix(state.benchSelections.count) {
+            let fails = run.quiz.filter { !$0.passed }.map { "\($0.id)=\($0.output.prefix(25))" }.joined(separator: "; ")
+            check("benchmark \(run.model)", run.finished && run.error == nil,
+                  "quiz \(run.quiz.filter(\.passed).count)/\(run.quiz.count), context \(run.needle.filter(\.passed).count)/\(run.needle.count), reliable to \(run.maxReliableContext.map(formatContext) ?? "-"), max prompt speed at 32K \(Int(run.needle.filter { $0.contextTokens > 25000 }.map(\.promptTokensPerSecond).max() ?? 0)) tok/s, peak \(String(format: "%.1f", run.needle.map(\.peakMemoryGb).max() ?? 0)) GB" + (fails.isEmpty ? "" : " · missed: \(fails)"))
+        }
+        await snapshot("m3-benchmarks")
+        }
+
+        // 6. Head-to-head with a judge.
+        if let rival {
+            state.compareColumns = []
+            state.addCompare(target)
+            state.addCompare(rival)
+            state.params = GenParams(temperature: 0.3, maxTokens: 800, thinking: false)
+            state.comparePrompt = "Explain to a new engineer why database indexes speed up reads but slow down writes. Keep it under 120 words."
+            state.sidebarSelection = .compare
+            state.runCompare()
+            _ = await wait(900) { !state.isComparing }
+            state.judgeSelection = target
+            state.runJudge()
+            _ = await wait(900) { !state.isJudging }
+            for c in state.compareColumns {
+                check("compare \(c.selection.shortLabel) is answered and judged", c.error == nil && c.stats != nil && (c.score?.overall ?? 0) > 0,
+                      String(format: "%.1f tok/s, %d tokens, judge %.1f/10 · %@", c.stats?.tokensPerSecond ?? 0, c.stats?.generationTokens ?? 0, c.score?.overall ?? 0, c.score?.verdict ?? ""))
+            }
+            state.compareTab = .answers
+            await snapshot("m4-compare")
+            state.compareTab = .quality
+            await snapshot("m5-quality")
+        }
+        finish()
+    }
+
     static func run(_ state: AppState) async {
         // Start from a clean slate inside the self-test data folder.
         try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("chats.json"))
