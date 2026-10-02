@@ -44,7 +44,7 @@ struct FitBadge: View {
         case .fits: Badge(text: fit.label, color: .green, systemImage: "checkmark.circle")
         case .tight: Badge(text: fit.label, color: .orange, systemImage: "exclamationmark.circle")
         case .tooBig:
-            Badge(text: sizeGb > 0 ? "Needs \(Fit.requiredRam(sizeGb: sizeGb)) GB Mac" : fit.label,
+            Badge(text: sizeGb <= 0 ? fit.label : Fit.requiredRam(sizeGb: sizeGb).map { "Needs \($0) GB Mac" } ?? "Too big for any Mac",
                   color: .red, systemImage: "xmark.circle")
         }
     }

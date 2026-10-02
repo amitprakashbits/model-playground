@@ -248,9 +248,9 @@ enum Fit {
     }
 
     /// The smallest common Mac memory size that runs a model of this size comfortably.
-    static func requiredRam(sizeGb: Double) -> Int {
+    static func requiredRam(sizeGb: Double) -> Int? {
         let need = (sizeGb * 1.15 + 0.5) / 0.68
-        return [8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 512].first { Double($0) >= need } ?? 512
+        return [8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 512].first { Double($0) >= need }
     }
 }
 
