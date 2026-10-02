@@ -253,7 +253,7 @@ struct RecommendedCard: View {
                 Badge(text: String(format: "%.1f GB", entry.sizeGb))
                 Badge(text: "\(formatContext(entry.context)) ctx")
             }
-            DownloadButton(repoId: entry.repoId)
+            DownloadButton(repoId: entry.repoId, convert: entry.needsConversion)
         }
         .card()
     }
@@ -274,14 +274,18 @@ struct CatalogRow: View {
                 }
                 Text(entry.notes).font(.caption).foregroundStyle(Theme.secondaryText)
                 HStack(spacing: 4) {
-                    EngineBadge(engine: entry.engine)
+                    if entry.needsConversion {
+                        Badge(text: "Converted to MLX", color: .blue, systemImage: "wand.and.stars")
+                    } else {
+                        EngineBadge(engine: entry.engine)
+                    }
                     Badge(text: String(format: "%.1f GB", entry.sizeGb), systemImage: "arrow.down.circle")
                     Badge(text: "\(formatContext(entry.context)) context", systemImage: "text.alignleft")
-                    FitBadge(fit: Fit.estimate(sizeGb: entry.sizeGb, ramGb: state.ramGb), sizeGb: entry.sizeGb)
+                    FitBadge(fit: Fit.estimate(sizeGb: entry.installedSizeGb, ramGb: state.ramGb), sizeGb: entry.installedSizeGb)
                 }
             }
             Spacer()
-            DownloadButton(repoId: entry.repoId)
+            DownloadButton(repoId: entry.repoId, convert: entry.needsConversion)
         }
         .card(padding: 12)
     }
@@ -290,15 +294,21 @@ struct CatalogRow: View {
 struct DownloadButton: View {
     @Environment(AppState.self) private var state
     var repoId: String
+    var convert = false
 
     var body: some View {
         if state.isInstalled(repoId) {
             Button {
-                if let m = state.models.first(where: { $0.repoId == repoId }) {
+                if let m = state.installedModel(repoId) {
                     state.newChat(with: ModelSelection(model: m, engine: m.engines[0]))
                 }
             } label: { Label("Chat", systemImage: "bubble.left") }
                 .buttonStyle(.pill)
+        } else if let job = state.activeDownload(repoId), job.status == "converting" {
+            VStack(alignment: .trailing, spacing: 3) {
+                ProgressView().controlSize(.small)
+                Text("Converting to 4-bit MLX...").font(.caption2).foregroundStyle(Theme.secondaryText)
+            }
         } else if let job = state.activeDownload(repoId), job.isActive {
             VStack(alignment: .trailing, spacing: 3) {
                 ProgressView(value: job.fraction).frame(width: 150).tint(Theme.accent)
@@ -309,8 +319,14 @@ struct DownloadButton: View {
             }
         } else {
             VStack(alignment: .trailing, spacing: 3) {
-                Button { state.download(repoId) } label: { Label("Download", systemImage: "arrow.down") }
-                    .buttonStyle(.pillProminent)
+                if convert {
+                    Button { state.convert(repoId) } label: { Label("Download & convert", systemImage: "wand.and.stars") }
+                        .buttonStyle(.pillProminent)
+                        .help("Downloads the full-precision weights and quantizes them to a 4-bit MLX model")
+                } else {
+                    Button { state.download(repoId) } label: { Label("Download", systemImage: "arrow.down") }
+                        .buttonStyle(.pillProminent)
+                }
                 if let job = state.activeDownload(repoId), job.status == "error" {
                     Text("Failed: \(job.error ?? "")").font(.caption2).foregroundStyle(.red).lineLimit(2)
                         .frame(maxWidth: 220, alignment: .trailing)
@@ -350,7 +366,7 @@ struct HFSearch: View {
             .padding(.horizontal, 22)
             .padding(.bottom, 10)
             if !mlxOnly {
-                Text("Other repos need an mlx-lm supported architecture with safetensors weights. Unquantized Llama models can also run with AirLLM.")
+                Text("Full-precision repos can be downloaded and converted to 4-bit MLX in one step, if mlx-lm supports their architecture.")
                     .font(.caption).foregroundStyle(Theme.secondaryText).padding(.bottom, 6)
             }
             if loading {
@@ -376,7 +392,11 @@ struct HFSearch: View {
                                     }
                                 }
                                 Spacer()
-                                DownloadButton(repoId: r.repoId)
+                                if isMLX(r.repoId) {
+                                    DownloadButton(repoId: r.repoId)
+                                } else {
+                                    DownloadButton(repoId: r.repoId, convert: true)
+                                }
                             }
                             .card(padding: 12)
                         }
@@ -387,6 +407,11 @@ struct HFSearch: View {
             }
         }
         .task { if results.isEmpty { run() } }
+    }
+
+    private func isMLX(_ id: String) -> Bool {
+        let l = id.lowercased()
+        return l.hasPrefix("mlx-community/") || l.contains("mlx")
     }
 
     private func quantLabel(_ id: String) -> String? {

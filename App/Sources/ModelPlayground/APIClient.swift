@@ -74,6 +74,10 @@ struct APIClient {
         let r: JobRef = try await post("download", ["repo_id": repoId, "folder": folder])
         return r.jobId
     }
+    func convert(source: String, folder: String, bits: Int = 4) async throws -> String {
+        let r: JobRef = try await post("convert", ["source": source, "folder": folder, "bits": bits])
+        return r.jobId
+    }
     func tokenize(paths: [String], text: String) async throws -> TokenCounts {
         try await post("tokenize", ["paths": paths, "text": text], timeout: 120)
     }

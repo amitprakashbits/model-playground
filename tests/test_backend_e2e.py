@@ -169,6 +169,23 @@ def main():
         check("catalog has powerful 32GB+ models", any(c["family"].startswith("Powerful") for c in cat)
               and any(c["family"].startswith("Frontier") for c in cat))
 
+        # Download a full-precision model and convert it to 4-bit MLX, then chat with the result.
+        job = post("/convert", {"source": "Qwen/Qwen2.5-0.5B-Instruct", "folder": str(MODELS), "bits": 4})["job_id"]
+        deadline = time.time() + 1200
+        while time.time() < deadline:
+            cj = next(j for j in get("/downloads") if j["job_id"] == job)
+            if cj["status"] in ("done", "error"):
+                break
+            time.sleep(2)
+        check("convert full-precision model to 4-bit MLX", cj["status"] == "done", cj.get("error") or f"{cj['downloaded'] / 1e6:.0f} MB")
+        conv = next((m for m in get("/models?folder=" + str(MODELS)) if m["path"] == cj["path"]), None)
+        check("converted model is listed as quantized", conv is not None and conv["quantized"], conv["name"] if conv else "missing")
+        if conv:
+            text = "".join(ev.get("text", "") for ev in stream("/chat", {
+                "model_path": conv["path"], "temperature": 0, "max_tokens": 60,
+                "messages": [{"role": "user", "content": "What is the capital of France? One word."}]}) if ev["type"] == "token")
+            check("converted model answers", "paris" in text.lower(), repr(text[-60:]))
+
         # Cancellation: stop after a few tokens and confirm the worker is free again.
         got = {"n": 0}
 

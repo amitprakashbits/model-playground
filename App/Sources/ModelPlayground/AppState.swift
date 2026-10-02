@@ -370,7 +370,12 @@ final class AppState {
         if let d = try? await api.downloads() { downloads = d }
     }
 
-    func isInstalled(_ repoId: String) -> Bool { models.contains { $0.repoId == repoId } }
+    func isInstalled(_ repoId: String) -> Bool { installedModel(repoId) != nil }
+
+    /// The installed model for a repo, including a local MLX conversion of it.
+    func installedModel(_ repoId: String) -> LocalModel? {
+        models.first { $0.repoId == repoId || $0.repoId.hasPrefix(repoId + "-mlx-") }
+    }
 
     func activeDownload(_ repoId: String) -> DownloadJob? {
         downloads.last { $0.repoId == repoId && ($0.isActive || $0.status == "error") }
@@ -394,6 +399,19 @@ final class AppState {
                 pollDownloads()
             } catch {
                 presentError("Download failed", error.localizedDescription)
+            }
+        }
+    }
+
+    func convert(_ repoId: String, bits: Int = 4) {
+        Task {
+            do {
+                try FileManager.default.createDirectory(atPath: modelsFolder, withIntermediateDirectories: true)
+                _ = try await api.convert(source: repoId, folder: modelsFolder, bits: bits)
+                await refreshDownloads()
+                pollDownloads()
+            } catch {
+                presentError("Conversion failed", error.localizedDescription)
             }
         }
     }

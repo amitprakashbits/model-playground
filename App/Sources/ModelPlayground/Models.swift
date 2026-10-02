@@ -29,6 +29,10 @@ struct CatalogEntry: Codable, Identifiable, Hashable {
     var notes: String
     var id: String { repoId }
     var name: String { repoId.split(separator: "/").last.map(String.init) ?? repoId }
+    /// Full-precision repos that are quantized to MLX on download.
+    var needsConversion: Bool { engine == "convert" }
+    /// What it occupies on disk after conversion.
+    var installedSizeGb: Double { needsConversion ? sizeGb * 0.29 : sizeGb }
 }
 
 struct SearchResult: Codable, Identifiable, Hashable {
@@ -48,7 +52,7 @@ struct DownloadJob: Codable, Identifiable, Hashable {
     var error: String?
     var id: String { jobId }
 
-    var isActive: Bool { status == "starting" || status == "downloading" }
+    var isActive: Bool { status == "starting" || status == "downloading" || status == "converting" }
     var fraction: Double { total > 0 ? min(1, Double(downloaded) / Double(total)) : 0 }
 }
 

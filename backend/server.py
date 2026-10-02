@@ -19,6 +19,8 @@ import os
 import queue
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -137,6 +139,7 @@ CATALOG = [
     ("Frontier (64 GB+)", "mlx-community/GLM-4.5-Air-4bit", "106B MoE", 60.2, 131072, "mlx", "Zhipu GLM 4.5 Air"),
     ("Frontier (64 GB+)", "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit", "109B MoE", 61.1, 10485760, "mlx", "Meta Llama 4 Scout, 10M context"),
     ("Frontier (64 GB+)", "mlx-community/gpt-oss-120b-MXFP4-Q4", "120B MoE", 62.4, 131072, "mlx", "OpenAI gpt-oss 120B"),
+    ("Kimi", "khazarai/Qwen3.5-9B-Kimi-k3-Distilled", "9B", 19.3, 262144, "convert", "Qwen3.5-9B distilled from Kimi K3 coding traces. Converted to 4-bit MLX on download (about 5.5 GB)"),
     ("Kimi", "mlx-community/Kimi-Linear-48B-A3B-Instruct-3bit", "48B MoE", 21.5, 1048576, "mlx", "Moonshot Kimi Linear, hybrid attention for long context"),
     ("Kimi", "mlx-community/Kimi-Linear-48B-A3B-Instruct-4bit", "48B MoE", 27.6, 1048576, "mlx", "Moonshot Kimi Linear, 4-bit"),
     ("Kimi", "mlx-community/Kimi-Dev-72B-4bit", "72B", 40.9, 131072, "mlx", "Moonshot Kimi-Dev coding model"),
@@ -232,7 +235,7 @@ def scan_folder(folder: Path) -> list[dict]:
         if not child.is_dir() or child.name.startswith("."):
             continue
         # Skip folders that are still downloading.
-        if any(j["path"] == str(child) and j["status"] in ("starting", "downloading") for j in downloads.values()):
+        if any(j["path"] == str(child) and j["status"] in ("starting", "downloading", "converting") for j in downloads.values()):
             continue
         m = describe_model(child, child.name.replace("__", "/"), "folder")
         if m:
@@ -264,37 +267,90 @@ downloads: dict[str, dict] = {}
 downloads_lock = threading.Lock()
 
 
-def run_download(job_id: str, repo_id: str, target: Path):
+def fetch(job: dict, repo_id: str, target: Path):
+    """Downloads a repo into target, updating job["downloaded"] / job["total"] as it goes."""
     from huggingface_hub import HfApi, snapshot_download
 
+    info = HfApi().model_info(repo_id, files_metadata=True)
+    names = [s.rfilename for s in info.siblings]
+    ignore = ["*.gguf", "*.onnx", "*.msgpack", "*.h5", "*.ot", "original/*", "onnx/*"]
+    if any(n.endswith(".safetensors") for n in names):
+        ignore += ["*.bin", "*.pt", "*.pth"]  # skip duplicate PyTorch weights
+    wanted = [s for s in info.siblings if not any(fnmatch.fnmatch(s.rfilename, p) for p in ignore)]
+    job["total"] = sum((s.size or 0) for s in wanted)
+    job["status"] = "downloading"
+
+    stop = threading.Event()
+
+    def progress():
+        while not stop.is_set():
+            if target.exists():
+                job["downloaded"] = min(dir_size(target), job["total"] or 1 << 62)
+            stop.wait(1.0)
+
+    t = threading.Thread(target=progress, daemon=True)
+    t.start()
+    try:
+        # Flaky connections drop mid-transfer; finished files are kept, so retrying resumes.
+        for attempt in range(5):
+            try:
+                snapshot_download(repo_id, local_dir=str(target), ignore_patterns=ignore)
+                break
+            except Exception as e:
+                if attempt == 4 or isinstance(e, (KeyboardInterrupt,)) or "404" in str(e) or "401" in str(e):
+                    raise
+                job["error"] = f"Retrying after network error ({attempt + 1}/4): {type(e).__name__}"
+                time.sleep(3 * (attempt + 1))
+        job["error"] = None
+    finally:
+        stop.set()
+        t.join()
+    shutil.rmtree(target / ".cache", ignore_errors=True)
+    job["downloaded"] = dir_size(target)
+
+
+def run_download(job_id: str, repo_id: str, target: Path):
     job = downloads[job_id]
     try:
-        info = HfApi().model_info(repo_id, files_metadata=True)
-        names = [s.rfilename for s in info.siblings]
-        ignore = ["*.gguf", "*.onnx", "*.msgpack", "*.h5", "*.ot", "original/*", "onnx/*"]
-        if any(n.endswith(".safetensors") for n in names):
-            ignore += ["*.bin", "*.pt", "*.pth"]  # skip duplicate PyTorch weights
-        wanted = [s for s in info.siblings if not any(fnmatch.fnmatch(s.rfilename, p) for p in ignore)]
-        job["total"] = sum((s.size or 0) for s in wanted)
-        job["status"] = "downloading"
+        fetch(job, repo_id, target)
+        job["status"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = f"{type(e).__name__}: {e}"
 
-        stop = threading.Event()
 
-        def progress():
-            while not stop.is_set():
-                if target.exists():
-                    job["downloaded"] = min(dir_size(target), job["total"] or 1 << 62)
-                stop.wait(1.0)
+CONVERT_SCRIPT = (
+    "import sys\n"
+    "from mlx_lm import convert\n"
+    "convert(sys.argv[1], mlx_path=sys.argv[2], quantize=True, q_bits=int(sys.argv[3]), q_group_size=64)\n"
+)
 
-        t = threading.Thread(target=progress, daemon=True)
-        t.start()
-        try:
-            snapshot_download(repo_id, local_dir=str(target), ignore_patterns=ignore)
-        finally:
-            stop.set()
-            t.join()
-        shutil.rmtree(target / ".cache", ignore_errors=True)
-        job["downloaded"] = dir_size(target)
+
+def run_convert(job_id: str, source: str, folder: Path, bits: int):
+    """Downloads a full-precision model (or uses a local folder) and quantizes it to MLX."""
+    job = downloads[job_id]
+    local = Path(source).expanduser()
+    staging = None
+    try:
+        if local.is_dir():
+            src = local
+        else:
+            staging = folder / ".staging" / folder_dirname(source)
+            fetch(job, source, staging)
+            src = staging
+        target = Path(job["path"])
+        if target.exists():
+            shutil.rmtree(target)
+        job["status"] = "converting"
+        # A separate process keeps conversion memory away from the chat engine.
+        r = subprocess.run([sys.executable, "-c", CONVERT_SCRIPT, str(src), str(target), str(bits)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            shutil.rmtree(target, ignore_errors=True)
+            raise RuntimeError((r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout) else "conversion failed")
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+        job["downloaded"] = job["total"] = dir_size(target)
         job["status"] = "done"
     except Exception as e:
         job["status"] = "error"
@@ -815,6 +871,12 @@ class DownloadRequest(BaseModel):
     folder: str
 
 
+class ConvertRequest(BaseModel):
+    source: str  # Hugging Face repo id or a local folder with full-precision weights
+    folder: str
+    bits: int = 4
+
+
 def stream_job(out: queue.Queue):
     finished = False
     try:
@@ -896,6 +958,25 @@ def download(req: DownloadRequest):
         downloads[jid] = {"job_id": jid, "repo_id": req.repo_id, "path": str(target), "status": "starting",
                           "downloaded": 0, "total": 0, "error": None}
     threading.Thread(target=run_download, args=(jid, req.repo_id, target), daemon=True).start()
+    return {"job_id": jid}
+
+
+@app.post("/convert")
+def convert_model(req: ConvertRequest):
+    if req.bits not in (3, 4, 6, 8):
+        raise HTTPException(400, "bits must be 3, 4, 6 or 8")
+    folder = Path(req.folder).expanduser()
+    folder.mkdir(parents=True, exist_ok=True)
+    name = Path(req.source).name if Path(req.source).expanduser().is_dir() else folder_dirname(req.source)
+    target = folder / f"{name}-mlx-{req.bits}bit"
+    with downloads_lock:
+        for jid, j in downloads.items():
+            if j["path"] == str(target) and j["status"] in ("starting", "downloading", "converting"):
+                return {"job_id": jid}
+        jid = uuid.uuid4().hex[:8]
+        downloads[jid] = {"job_id": jid, "repo_id": req.source, "path": str(target), "status": "starting",
+                          "downloaded": 0, "total": 0, "error": None, "kind": "convert"}
+    threading.Thread(target=run_convert, args=(jid, req.source, folder, req.bits), daemon=True).start()
     return {"job_id": jid}
 
 

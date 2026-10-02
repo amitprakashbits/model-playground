@@ -43,7 +43,9 @@ enum SelfTest {
             return finish()
         }
         check("model is installed", true, "\(target.model.name), \(target.model.sizeLabel), \(formatContext(target.model.context)) context")
-        let rival = state.selections.first { $0.engine == "mlx" && $0.model.name.contains("Qwen3-4B-Instruct-2507") }
+        let env = ProcessInfo.processInfo.environment
+        let rivalName = env["MP_RIVAL"] ?? "Qwen3-4B-Instruct-2507"
+        let rival = state.selections.first { $0.engine == "mlx" && $0.model.name.contains(rivalName) && $0.id != target.id }
 
         func lastReply(_ id: UUID) -> ChatMessage? { state.sessions.first { $0.id == id }?.messages.last }
         func describe(_ m: ChatMessage?) -> String {
@@ -70,8 +72,13 @@ enum SelfTest {
         let parts = splitReasoning(r2?.content ?? "")
         check("reasoning is folded into a thought block", (parts.reasoning?.count ?? 0) > 50 && !parts.thinking,
               "thought \(wordCount(parts.reasoning ?? "")) words")
-        check("reasoning reaches a correct final answer", r2?.stats?.finishReason != "length" && parts.answer.contains("5")
-              && !parts.answer.contains("10 cents"), describe(r2))
+        // The first amount the answer states must be 5 cents. Worked steps often mention 110 cents
+        // or discuss the intuitive-but-wrong 10 cents, so only the leading claim is checked.
+        var stated: Int?
+        if let m = parts.answer.lowercased().firstMatch(of: /(\d+)\s*(?:cents|¢)|\$0?\.(\d\d)\b/) {
+            if let c = m.output.1 { stated = Int(c) } else if let d = m.output.2 { stated = Int(d) }
+        }
+        check("reasoning reaches a correct final answer", r2?.stats?.finishReason != "length" && stated == 5, describe(r2))
 
         // 3. Rich formatting.
         state.params.thinking = false
@@ -107,7 +114,7 @@ enum SelfTest {
         if ProcessInfo.processInfo.environment["MP_SKIP_BENCH"] == nil {
         state.benchSelections = [target] + (rival.map { [$0] } ?? [])
         state.benchSuites = ["quick", "needle"]
-        state.benchMaxContext = 32000
+        state.benchMaxContext = Int(env["MP_BENCH_MAX"] ?? "") ?? 32000
         state.sidebarSelection = .benchmarks
         state.runBenchmarks()
         _ = await wait(3600) { !state.isBenchmarking }

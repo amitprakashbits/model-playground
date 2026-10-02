@@ -4,9 +4,10 @@ Run on October 02, 2026 on an Apple Silicon Mac with 16 GB of unified memory (ma
 
 | Suite | Result |
 |---|---|
-| Backend end-to-end (`tests/test_backend_e2e.py`) | **23/23 passed** |
+| Backend end-to-end (`tests/test_backend_e2e.py`) | **26/26 passed** |
 | App self-test (`ModelPlayground --selftest`) | **23/23 passed** |
 | Qwen3.5-9B in-app model test (`MP_TEST_MODEL=Qwen3.5-9B`) | **9/9 passed**, plus benchmarks below |
+| Kimi K3-distilled 9B in-app model test | **9/9 passed**, plus benchmarks below |
 
 Run everything with `./scripts/run_tests.sh`.
 
@@ -24,6 +25,48 @@ Run everything with `./scripts/run_tests.sh`.
 
 Takeaways: Qwen3.5-9B is the strongest model tested on this Mac and handled every long-context test up to 32K tokens. It is about 2.5× slower than Qwen3-4B, which is nearly as reliable on retrieval. Long prompts are bounded by prompt processing speed (about 115–150 tok/s), not by context window size.
 
+## Kimi K3 on a 16 GB Mac: the distilled 9B
+
+Kimi K3 itself is 1.56 TB (the smallest MLX build is 181 GB), so it cannot run on a 16 GB Mac. The closest model that does is
+[`khazarai/Qwen3.5-9B-Kimi-k3-Distilled`](https://huggingface.co/khazarai/Qwen3.5-9B-Kimi-k3-Distilled) (Apache-2.0): Qwen3.5-9B fine-tuned
+on Kimi K3 coding and debugging traces. It is only published at full precision (19.3 GB), so the app downloads it and converts it
+to 4-bit MLX (4.7 GB) with the new **Download & convert** feature. Conversion peaked at 12 GB of memory.
+
+| | Kimi K3-distilled 9B | Qwen3.5-9B (its base) |
+|---|---|---|
+| Quiz (13 auto-graded) | **12/13** (missed: siblings riddle) | 11/13 (missed: siblings riddle, three words) |
+| Long-context retrieval, 1K–16K × 3 depths | 15/15 | 15/15 |
+| Generation speed | ~21–23 tok/s | ~20–22 tok/s |
+| Bat-and-ball riddle with thinking | Correct after **90–180 words** of reasoning | Correct after 1,405 words |
+| 5.5K-token document Q&A | Correct | Correct |
+| AI judge head-to-head (index explanation) | 10/10 | 10/10 |
+
+Takeaway: on these tests the distilled model is at least as good as its base, and its reasoning is roughly 6–10× shorter, so
+thinking-mode answers arrive much sooner. Its tokenizer triggers a transformers warning about an "incorrect regex pattern"; we
+verified the split pattern, vocabulary and token IDs are identical to the official Qwen3.5 tokenizer, so it is a false positive.
+It is a small community fine-tune, so treat these results as indicative rather than definitive.
+
+| | Check | Detail |
+|---|---|---|
+| ✅ | engine starts |  |
+| ✅ | model is installed | Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, 5.06 GB, 256K context |
+| ✅ | chat | no thinking)  (21.1 tok/s, 58 tokens, 2.04s first token, 5.2 GB \| A good API design prioritizes simplicity and consistency by exposing only the functionality u |
+| ✅ | reasoning is folded into a thought block | thought 102 words |
+| ✅ | reasoning reaches a correct final answer | 21.1 tok/s, 285 tokens, 0.91s first token, 5.5 GB \| 5 cents.  Let b be the ball's cost in dollars. The bat costs b + 1.00, and together they cost 1.10, so 2b + |
+| ✅ | markdown table answer | 21.1 tok/s, 197 tokens, 1.86s first token, 5.7 GB \| \| Language \| Speed \| Safety \| Learning Curve \| \| :--- \| :--- \| :--- \| :--- \| \| **Rust** \| Very  |
+| ✅ | long document Q&A | 8-bit KV cache)  (prompt 5459 tokens · 20.3 tok/s, 31 tokens, 41.30s first token, 7.0 GB \| Based on the note provided in the file:  *   **Technician:** Mara Ok |
+| ✅ | compare Qwen3.5-9B-Kimi-k3-Distilled-mlx is answered and judged | 21.9 tok/s, 160 tokens, judge 10.0/10 · The answer is an excellent, accurate, and clear explanation that fully meets the prompt's requirements. |
+| ✅ | compare Qwen3.5-9B is answered and judged | 21.8 tok/s, 151 tokens, judge 10.0/10 · The answer is accurate, helpful, clear, and meets the word limit. |
+
+Benchmarks (16K run):
+
+| | Check | Detail |
+|---|---|---|
+| ✅ | benchmark Kimi K3-distilled 9B | quiz 12/13, context 15/15, reliable to 16K, peak 8.0 GB |
+| ✅ | benchmark Qwen3.5-9B | quiz 11/13, context 15/15, reliable to 16K, peak 8.0 GB |
+
+![Kimi K3-distilled vs Qwen3.5-9B benchmarks](screenshots/kimi-benchmarks.png)
+
 ## Bugs found and fixed during testing
 
 - **Qwen 3.5 reasoning was shown as the answer.** Its chat template opens `<think>` inside the prompt, so replies only contained the closing tag. The backend now emits the opening tag and the app folds reasoning correctly. Follow-up latency dropped from 26.5 s to 1.4 s because reasoning is no longer resent as history.
@@ -32,6 +75,8 @@ Takeaways: Qwen3.5-9B is the strongest model tested on this Mac and handled ever
 - **Download progress stuck at 0%.** Xet transfers buffer whole files before writing; downloads now use plain HTTP so progress is accurate.
 - **"Reliable context" overstated results** when a shorter length failed; it now requires every shorter length to pass.
 - **Compare looked broken with no models selected** (send button disabled with no explanation). It now pre-fills installed models and explains what's missing.
+- **Dropped connections failed downloads.** A TLS reset aborted a download; downloads now retry up to 4 times and resume.
+- **A self-test check rejected correct answers.** The bat-and-ball check flagged "110 cents" in worked steps; it now checks the first amount the answer states.
 - **Port conflicts.** The engine now picks a free port on each launch and verifies it is talking to its own backend.
 
 ## Backend end-to-end
@@ -39,24 +84,29 @@ Takeaways: Qwen3.5-9B is the strongest model tested on this Mac and handled ever
 | | Check | Detail |
 |---|---|---|
 | ✅ | health identifies the app | {'ok': True, 'app': 'model-playground', 'version': '1.0.0', 'busy': False, 'loaded': None} |
-| ✅ | catalog has 60+ models | 106 entries |
+| ✅ | catalog has 60+ models | 114 entries |
 | ✅ | catalog entries have context sizes |  |
-| ✅ | system info | {'total_ram_gb': 17.2, 'available_ram_gb': 8.2, 'free_disk_gb': 125.9} |
+| ✅ | system info | {'total_ram_gb': 17.2, 'available_ram_gb': 7.6, 'free_disk_gb': 124.3} |
 | ✅ | downloads finish | mlx-community/Qwen3-0.6B-4bit=done ; mlx-community/LFM2.5-1.2B-Instruct-4bit=done  |
 | ✅ | download progress reaches total |  |
-| ✅ | downloaded models are listed | mlx-community/LFM2.5-1.2B-Instruct-4bit, mlx-community/Qwen3-0.6B-4bit, mlx-community/Qwen3-4B-Instruct-2507-4bit, mlx-community/Qwen3.5-9B-4bit, TinyLlama/Tiny |
+| ✅ | downloaded models are listed | Qwen/Qwen2.5-0.5B-Instruct-mlx-4bit, khazarai/Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, mlx-community/LFM2.5-1.2B-Instruct-4bit, mlx-community/Qwen3-0.6B-4bit, mlx |
 | ✅ | hf cache models are listed |  |
 | ✅ | chat Qwen3-0.6B-4bit streams an answer | '12 multiplied by 12 is 144.' |
-| ✅ | chat Qwen3-0.6B-4bit reports stats | 243.31 tok/s, 14 tokens |
+| ✅ | chat Qwen3-0.6B-4bit reports stats | 233.3 tok/s, 14 tokens |
 | ✅ | chat LFM2.5-1.2B-Instruct-4bit streams an answer | 'The result of 12 multiplied by 12 is 144.' |
-| ✅ | chat LFM2.5-1.2B-Instruct-4bit reports stats | 179.18 tok/s, 14 tokens |
+| ✅ | chat LFM2.5-1.2B-Instruct-4bit reports stats | 187.42 tok/s, 14 tokens |
 | ✅ | multi-turn context with 8-bit KV cache | "Hello! I'm Zorblat. If you have any questions or need help, feel free to ask! 😊" |
 | ✅ | tokenize counts per model | {'/Users/amitprakash/ModelPlayground/models/mlx-community__Qwen3-0.6B-4bit': 201, '/Users/amitprakash/ModelPlayground/models/mlx-community__LFM2.5-1.2B-Instruct |
-| ✅ | judge returns a score per answer | [{"accuracy": 10.0, "helpfulness": 10.0, "clarity": 10.0, "overall": 10.0, "verdict": "12 * 12 is 144.", "raw": "```json\n{\n  \"reference\": \"12 multiplied by |
+| ✅ | judge returns a score per answer | [{"accuracy": 10.0, "helpfulness": 10.0, "clarity": 10.0, "overall": 10.0, "verdict": "12 * 12 is 144.", "raw": "```json
+{
+  \"reference\": \"12 multiplied by |
 | ✅ | judge scores are in range | a=10.0, b=10.0 |
 | ✅ | eval grades the quiz | 6/13 passed |
 | ✅ | eval runs the context test | 1K tokens, depth 50%=pass, 2K tokens, depth 50%=pass |
 | ✅ | catalog has powerful 32GB+ models |  |
+| ✅ | convert full-precision model to 4-bit MLX | 290 MB |
+| ✅ | converted model is listed as quantized | Qwen2.5-0.5B-Instruct-mlx-4bit |
+| ✅ | converted model answers | 'Paris' |
 | ✅ | stop cancels generation | 6 tokens |
 | ✅ | worker is idle after stop |  |
 | ✅ | missing model returns 404 |  |
@@ -66,11 +116,11 @@ Takeaways: Qwen3.5-9B is the strongest model tested on this Mac and handled ever
 
 | | Check | Detail |
 |---|---|---|
-| ✅ | engine starts on a free port | port 56525 |
-| ✅ | catalog loads | 106 models |
-| ✅ | installed models are found | LFM2.5-1.2B-Instruct-4bit, Qwen3-0.6B-4bit, Qwen3-4B-Instruct-2507-4bit, Qwen3.5-9B-4bit, TinyLlama-1.1B-Chat-v1.0 |
+| ✅ | engine starts on a free port | port 56237 |
+| ✅ | catalog loads | 114 models |
+| ✅ | installed models are found | LFM2.5-1.2B-Instruct-4bit, Qwen2.5-0.5B-Instruct-mlx-4bit, Qwen3-0.6B-4bit, Qwen3-4B-Instruct-2507-4bit, Qwen3.5-9B-4bit, Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, |
 | ✅ | chat reply streams | 12 multiplied by 12 is 144. |
-| ✅ | chat reply has stats | 235 tok/s, 14 tokens |
+| ✅ | chat reply has stats | 233 tok/s, 14 tokens |
 | ✅ | attachment is added |  |
 | ✅ | model reads the attached file | PERIWINKLE |
 | ✅ | regenerate replaces the last reply |  |
