@@ -31,6 +31,7 @@ struct ContentView: View {
         switch state.sidebarSelection {
         case .chat(let id): ChatView(sessionId: id).id(id)
         case .compare: CompareView()
+        case .agents: AgentsView()
         case .benchmarks: BenchmarksView()
         case .leaderboard: LeaderboardView()
         case .models, .none: ModelsView()
@@ -106,21 +107,28 @@ struct Sidebar: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
 
-            List(selection: $state.sidebarSelection) {
-                Section {
-                    navRow("Compare models", "rectangle.split.3x1", .compare)
-                    navRow("Benchmarks", "gauge.with.dots.needle.67percent", .benchmarks)
-                    navRow("Leaderboard", "chart.bar.xaxis", .leaderboard)
-                    navRow("Model library", "square.stack.3d.up", .models, badge: state.models.count)
-                }
-                ForEach(groups, id: \.0) { title, chats in
-                    Section(title) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    navRow("Agents", "person.3.fill", .agents, tint: .purple)
+                    navRow("Compare models", "rectangle.split.3x1.fill", .compare, tint: .blue)
+                    navRow("Benchmarks", "gauge.with.dots.needle.67percent", .benchmarks, tint: .orange)
+                    navRow("Leaderboard", "chart.bar.fill", .leaderboard, tint: .green)
+                    navRow("Model library", "square.stack.3d.up.fill", .models, badge: state.models.count, tint: .gray)
+                    ForEach(groups, id: \.0) { title, chats in
+                        Text(title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.secondaryText)
+                            .padding(.horizontal, 10)
+                            .padding(.top, 14)
+                            .padding(.bottom, 3)
                         ForEach(chats) { s in chatRow(s) }
                     }
                 }
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            .scrollIndicators(.never)
 
             StatusFooter()
         }
@@ -132,26 +140,65 @@ struct Sidebar: View {
         }
     }
 
-    private func navRow(_ title: String, _ icon: String, _ item: SidebarItem, badge: Int? = nil) -> some View {
-        Label(title, systemImage: icon)
-            .foregroundStyle(Theme.text)
-            .badge(badge ?? 0)
-            .tag(item)
+    private func navRow(_ title: String, _ icon: String, _ item: SidebarItem, badge: Int? = nil, tint: Color) -> some View {
+        SidebarRow(selected: state.sidebarSelection == item, action: { state.sidebarSelection = item }) {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(tint.gradient, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                Text(title)
+                Spacer()
+                if let badge, badge > 0 {
+                    Text("\(badge)").font(.caption.monospacedDigit()).foregroundStyle(Theme.secondaryText)
+                }
+            }
+        }
     }
 
     private func chatRow(_ s: ChatSession) -> some View {
-        HStack(spacing: 6) {
-            if state.generatingSession == s.id {
-                Image(systemName: "sparkle").font(.caption).foregroundStyle(Theme.accent).symbolEffect(.pulse)
+        SidebarRow(selected: state.sidebarSelection == .chat(s.id), action: { state.sidebarSelection = .chat(s.id) }) {
+            HStack(spacing: 6) {
+                if state.generatingSession == s.id {
+                    Image(systemName: "sparkle").font(.caption).foregroundStyle(Theme.accent).symbolEffect(.pulse)
+                }
+                Text(s.title).lineLimit(1)
+                Spacer(minLength: 0)
             }
-            Text(s.title).lineLimit(1).foregroundStyle(Theme.text)
         }
-        .tag(SidebarItem.chat(s.id))
         .contextMenu {
             Button("Rename...") { renameText = s.title; renaming = s.id }
             Button("Export as Markdown...") { state.exportChat(s.id) }
+            Divider()
             Button("Delete", role: .destructive) { state.deleteChat(s.id) }
         }
+    }
+}
+
+/// Sidebar row with the app's own selection and hover styling.
+struct SidebarRow<Content: View>: View {
+    var selected: Bool
+    var action: () -> Void
+    @ViewBuilder var content: Content
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            content
+                .font(.system(size: 13.5, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Theme.accent : Theme.text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(selected ? Theme.accentSoft : (hovering ? Theme.surfaceMuted.opacity(0.7) : Color.clear))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

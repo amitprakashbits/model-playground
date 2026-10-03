@@ -281,7 +281,14 @@ struct CatalogRow: View {
                     }
                     Badge(text: String(format: "%.1f GB", entry.sizeGb), systemImage: "arrow.down.circle")
                     Badge(text: "\(formatContext(entry.context)) context", systemImage: "text.alignleft")
-                    FitBadge(fit: Fit.estimate(sizeGb: entry.installedSizeGb, ramGb: state.ramGb), sizeGb: entry.installedSizeGb)
+                    if entry.engine == "airllm" {
+                        // AirLLM keeps one layer in memory at a time; disk space is what matters.
+                        let fitsDisk = entry.sizeGb < (state.system?.freeDiskGb ?? 0)
+                        Badge(text: fitsDisk ? "Streams from disk" : "Needs \(Int(entry.sizeGb.rounded())) GB free disk",
+                              color: fitsDisk ? .purple : .red, systemImage: "externaldrive")
+                    } else {
+                        FitBadge(fit: Fit.estimate(sizeGb: entry.installedSizeGb, ramGb: state.ramGb), sizeGb: entry.installedSizeGb)
+                    }
                 }
             }
             Spacer()

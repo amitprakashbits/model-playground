@@ -265,6 +265,40 @@ enum SelfTest {
         check("voting reveals names", !state.displayName(state.compareColumns[0]).hasPrefix("Model "))
         state.compareBlind = false
 
+        // Agents: a team in independent mode with a synthesizer, then chain mode.
+        state.params.maxTokens = 300
+        state.params.thinking = false
+        if let panel = AgentTeamPreset.all.first(where: { $0.name == "Brainstorm" }) { state.applyTeam(panel) }
+        check("team preset loads agents", state.agents.count == 4, state.agents.map(\.name).joined(separator: ", "))
+        state.agents[0].selection = qwen; state.agents[1].selection = lfm
+        state.agents[2].selection = qwen; state.agents[3].selection = lfm
+        state.agentMode = .independent
+        state.agentSynthesize = true
+        state.synthSelection = judge ?? qwen
+        state.agentPrompt = "Suggest one name for a coffee shop run by robots. Reply with the name and one sentence."
+        state.sidebarSelection = .agents
+        state.runAgents()
+        _ = await wait(600) { !state.isRunningAgents }
+        let outs = state.agents.map { state.agentOutputs[$0.id] ?? AgentOutput() }
+        check("every agent answers in the grid", outs.allSatisfy { $0.phase == .done && !$0.answer.isEmpty && $0.error == nil },
+              outs.map { "\($0.answer.prefix(30))" }.joined(separator: " | "))
+        check("agents record stats", outs.allSatisfy { ($0.stats?.tokensPerSecond ?? 0) > 0 })
+        check("synthesizer merges the answers", !state.synthOutput.answer.isEmpty && state.synthOutput.error == nil,
+              String(state.synthOutput.answer.prefix(80)))
+        check("progress reaches the end", state.agentProgress.done == state.agentProgress.total, "\(state.agentProgress.done)/\(state.agentProgress.total)")
+        await snapshot("07c-agents")
+
+        if let debate = AgentTeamPreset.all.first(where: { $0.name == "Debate" }) { state.applyTeam(debate) }
+        for i in state.agents.indices { state.agents[i].selection = judge ?? qwen }
+        state.agentPrompt = "Proposition: remote work is better than office work. Keep it to 3 sentences."
+        state.runAgents()
+        _ = await wait(600) { !state.isRunningAgents }
+        let chain = state.agents.map { state.agentOutputs[$0.id]?.answer ?? "" }
+        check("chain mode runs every agent in order", state.agentMode == .chain && chain.allSatisfy { !$0.isEmpty },
+              chain.map { String($0.prefix(25)) }.joined(separator: " | "))
+        await snapshot("07d-agents-debate")
+        state.params.maxTokens = 400
+
         // Benchmarks: quiz plus long-context retrieval.
         state.benchSelections = [qwen, lfm]
         state.benchSuites = ["quick", "needle"]

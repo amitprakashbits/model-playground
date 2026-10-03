@@ -186,6 +186,25 @@ def main():
                 "messages": [{"role": "user", "content": "What is the capital of France? One word."}]}) if ev["type"] == "token")
             check("converted model answers", "paris" in text.lower(), repr(text[-60:]))
 
+        # AirLLM on a tied-embedding Llama 3.2 model (needs the generated lm_head shard).
+        post("/download", {"repo_id": "unsloth/Llama-3.2-1B-Instruct", "folder": str(MODELS)})
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            dj = [j for j in get("/downloads") if j["repo_id"] == "unsloth/Llama-3.2-1B-Instruct"][-1]
+            if dj["status"] in ("done", "error"):
+                break
+            time.sleep(2)
+        llama = next((m for m in get("/models?folder=" + str(MODELS)) if m["repo_id"] == "unsloth/Llama-3.2-1B-Instruct"), None)
+        check("Llama 3.2 offers the AirLLM engine", llama is not None and "airllm" in llama["engines"])
+        if llama:
+            evs = stream("/chat", {"model_path": llama["path"], "engine": "airllm", "temperature": 0, "max_tokens": 10,
+                                   "messages": [{"role": "user", "content": "What is the capital of Japan? One short sentence."}]}, timeout=1200)
+            text = "".join(e.get("text", "") for e in evs if e["type"] == "token")
+            done = next((e["stats"] for e in evs if e["type"] == "done"), None)
+            err = next((e["message"] for e in evs if e["type"] == "error"), None)
+            check("AirLLM runs Llama 3.2 (tied embeddings)", "tokyo" in text.lower() and done and done["engine"] == "airllm",
+                  err or f"{text!r}, {done['tokens_per_second'] if done else 0} tok/s, peak {done['peak_memory_gb'] if done else 0} GB")
+
         # Cancellation: stop after a few tokens and confirm the worker is free again.
         got = {"n": 0}
 

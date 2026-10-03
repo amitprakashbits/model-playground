@@ -4,8 +4,8 @@ Run on October 02, 2026 on an Apple Silicon Mac with 16 GB of unified memory (ma
 
 | Suite | Result |
 |---|---|
-| Backend end-to-end (`tests/test_backend_e2e.py`) | **26/26 passed** |
-| App self-test (`ModelPlayground --selftest`) | **23/23 passed** |
+| Backend end-to-end (`tests/test_backend_e2e.py`) | **28/28 passed** |
+| App self-test (`ModelPlayground --selftest`) | **29/29 passed** |
 | Qwen3.5-9B in-app model test (`MP_TEST_MODEL=Qwen3.5-9B`) | **9/9 passed**, plus benchmarks below |
 | Kimi K3-distilled 9B in-app model test | **9/9 passed**, plus benchmarks below |
 
@@ -67,6 +67,24 @@ Benchmarks (16K run):
 
 ![Kimi K3-distilled vs Qwen3.5-9B benchmarks](screenshots/kimi-benchmarks.png)
 
+## Agents board
+
+One prompt, a team of agents in a grid. Each agent has its own role, model and temperature. **Independent** mode runs every agent on the prompt
+(agents sharing a model run back to back so it loads once); **Chain** mode lets each agent read and build on the earlier answers. An optional
+**Synthesizer** merges everything into one final answer. Team presets: Expert panel, Code review, Writers' room, Debate, Brainstorm and a
+Model shootout (one agent per installed model).
+
+| Independent mode with synthesizer | Chain mode (debate) |
+|---|---|
+| ![Agents](screenshots/07c-agents.png) | ![Debate](screenshots/07d-agents-debate.png) |
+
+## AirLLM
+
+AirLLM is available for every unquantized Llama-style model (TinyLlama, Llama 3.x, Mistral, SmolLM2, SOLAR, up to Llama 3.3 70B) and can be
+picked for chats, comparisons and agents. On this Mac it ran Llama 3.2 1B at 0.14–0.2 tok/s with under 2.2 GB of memory, against about
+200 tok/s for the same size of model on MLX. AirLLM is useful when a model does not fit in memory at all; MLX is the default because it is
+roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tokens).
+
 ## Bugs found and fixed during testing
 
 - **Qwen 3.5 reasoning was shown as the answer.** Its chat template opens `<think>` inside the prompt, so replies only contained the closing tag. The backend now emits the opening tag and the app folds reasoning correctly. Follow-up latency dropped from 26.5 s to 1.4 s because reasoning is no longer resent as history.
@@ -77,6 +95,9 @@ Benchmarks (16K run):
 - **Compare looked broken with no models selected** (send button disabled with no explanation). It now pre-fills installed models and explains what's missing.
 - **Dropped connections failed downloads.** A TLS reset aborted a download; downloads now retry up to 4 times and resume.
 - **A self-test check rejected correct answers.** The bat-and-ball check flagged "110 cents" in worked steps; it now checks the first amount the answer states.
+- **Streaming made Compare lag.** Every token re-rendered every column; updates are now batched to about 12 per second in chat, compare and agents.
+- **AirLLM failed on Llama 3.2** (`load_npz` error). Models with tied embeddings have no `lm_head` weights, so AirLLM never wrote that shard; the engine now generates it from the embedding shard.
+- **Sidebar selection used the system blue.** It now uses the app's own accent with hover states.
 - **Port conflicts.** The engine now picks a free port on each launch and verifies it is talking to its own backend.
 
 ## Backend end-to-end
@@ -84,17 +105,17 @@ Benchmarks (16K run):
 | | Check | Detail |
 |---|---|---|
 | ✅ | health identifies the app | {'ok': True, 'app': 'model-playground', 'version': '1.0.0', 'busy': False, 'loaded': None} |
-| ✅ | catalog has 60+ models | 114 entries |
+| ✅ | catalog has 60+ models | 123 entries |
 | ✅ | catalog entries have context sizes |  |
-| ✅ | system info | {'total_ram_gb': 17.2, 'available_ram_gb': 7.6, 'free_disk_gb': 124.3} |
+| ✅ | system info | {'total_ram_gb': 17.2, 'available_ram_gb': 2.7, 'free_disk_gb': 116.4} |
 | ✅ | downloads finish | mlx-community/Qwen3-0.6B-4bit=done ; mlx-community/LFM2.5-1.2B-Instruct-4bit=done  |
 | ✅ | download progress reaches total |  |
 | ✅ | downloaded models are listed | Qwen/Qwen2.5-0.5B-Instruct-mlx-4bit, khazarai/Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, mlx-community/LFM2.5-1.2B-Instruct-4bit, mlx-community/Qwen3-0.6B-4bit, mlx |
 | ✅ | hf cache models are listed |  |
 | ✅ | chat Qwen3-0.6B-4bit streams an answer | '12 multiplied by 12 is 144.' |
-| ✅ | chat Qwen3-0.6B-4bit reports stats | 233.3 tok/s, 14 tokens |
+| ✅ | chat Qwen3-0.6B-4bit reports stats | 69.47 tok/s, 14 tokens |
 | ✅ | chat LFM2.5-1.2B-Instruct-4bit streams an answer | 'The result of 12 multiplied by 12 is 144.' |
-| ✅ | chat LFM2.5-1.2B-Instruct-4bit reports stats | 187.42 tok/s, 14 tokens |
+| ✅ | chat LFM2.5-1.2B-Instruct-4bit reports stats | 63.69 tok/s, 14 tokens |
 | ✅ | multi-turn context with 8-bit KV cache | "Hello! I'm Zorblat. If you have any questions or need help, feel free to ask! 😊" |
 | ✅ | tokenize counts per model | {'/Users/amitprakash/ModelPlayground/models/mlx-community__Qwen3-0.6B-4bit': 201, '/Users/amitprakash/ModelPlayground/models/mlx-community__LFM2.5-1.2B-Instruct |
 | ✅ | judge returns a score per answer | [{"accuracy": 10.0, "helpfulness": 10.0, "clarity": 10.0, "overall": 10.0, "verdict": "12 * 12 is 144.", "raw": "```json
@@ -107,6 +128,8 @@ Benchmarks (16K run):
 | ✅ | convert full-precision model to 4-bit MLX | 290 MB |
 | ✅ | converted model is listed as quantized | Qwen2.5-0.5B-Instruct-mlx-4bit |
 | ✅ | converted model answers | 'Paris' |
+| ✅ | Llama 3.2 offers the AirLLM engine |  |
+| ✅ | AirLLM runs Llama 3.2 | tied embeddings)  ('Tokyo is the capital of Japan.', 0.14 tok/s, peak 1.93 GB |
 | ✅ | stop cancels generation | 6 tokens |
 | ✅ | worker is idle after stop |  |
 | ✅ | missing model returns 404 |  |
@@ -116,11 +139,11 @@ Benchmarks (16K run):
 
 | | Check | Detail |
 |---|---|---|
-| ✅ | engine starts on a free port | port 56237 |
-| ✅ | catalog loads | 114 models |
-| ✅ | installed models are found | LFM2.5-1.2B-Instruct-4bit, Qwen2.5-0.5B-Instruct-mlx-4bit, Qwen3-0.6B-4bit, Qwen3-4B-Instruct-2507-4bit, Qwen3.5-9B-4bit, Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, |
+| ✅ | engine starts on a free port | port 65184 |
+| ✅ | catalog loads | 123 models |
+| ✅ | installed models are found | LFM2.5-1.2B-Instruct-4bit, Llama-3.2-1B-Instruct, Qwen2.5-0.5B-Instruct-mlx-4bit, Qwen3-0.6B-4bit, Qwen3-4B-Instruct-2507-4bit, Qwen3.5-9B-4bit, Qwen3.5-9B-Kimi |
 | ✅ | chat reply streams | 12 multiplied by 12 is 144. |
-| ✅ | chat reply has stats | 233 tok/s, 14 tokens |
+| ✅ | chat reply has stats | 240 tok/s, 14 tokens |
 | ✅ | attachment is added |  |
 | ✅ | model reads the attached file | PERIWINKLE |
 | ✅ | regenerate replaces the last reply |  |
@@ -133,10 +156,16 @@ Benchmarks (16K run):
 | ✅ | vote is recorded |  |
 | ✅ | blind mode hides model names | Model A, Model B, Model C |
 | ✅ | voting reveals names |  |
+| ✅ | team preset loads agents | Visionary, Pragmatist, Contrarian, Customer |
+| ✅ | every agent answers in the grid  (**Name:** *Nocturne* |  |
+| ✅ | agents record stats |  |
+| ✅ | synthesizer merges the answers  (**Name:** *Nocturne* |  |
+| ✅ | progress reaches the end | 5/5 |
+| ✅ | chain mode runs every agent in order | Advocate: Remote work off \| Critic: While remote work \| Moderator: While the advo |
 | ✅ | benchmarks run for each model | LFM2.5-1.2B err=none; Qwen3-0.6B err=none |
 | ✅ | quiz is graded | LFM2.5-1.2B 4/13, Qwen3-0.6B 6/13 |
 | ✅ | context test covers lengths and depths | LFM2.5-1.2B 9/9, reliable to 4K, Qwen3-0.6B 8/9, reliable to - |
-| ✅ | runs recorded for leaderboard | 11 runs |
+| ✅ | runs recorded for leaderboard | 19 runs |
 | ✅ | judged quality reaches leaderboard |  |
 | ✅ | chats persist to disk |  |
 

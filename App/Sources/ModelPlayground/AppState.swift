@@ -16,6 +16,7 @@ enum CompareTab: String, CaseIterable, Identifiable {
 enum SidebarItem: Hashable {
     case chat(UUID)
     case compare
+    case agents
     case benchmarks
     case leaderboard
     case models
@@ -38,6 +39,31 @@ struct CompareColumn: Identifiable, Hashable {
 
     var answer: String { splitReasoning(output).answer }
     var words: Int { wordCount(answer) }
+}
+
+/// Collects streamed tokens and releases them at most every `interval` seconds, so the UI
+/// re-renders about 12 times per second instead of once per token.
+@MainActor
+final class TokenBuffer {
+    private var pending = ""
+    private var last = Date.distantPast
+    private let interval: TimeInterval
+
+    init(interval: TimeInterval = 0.08) { self.interval = interval }
+
+    /// Returns text to apply now, or nil while still buffering.
+    func add(_ t: String) -> String? {
+        pending += t
+        guard Date().timeIntervalSince(last) >= interval else { return nil }
+        return flush()
+    }
+
+    func flush() -> String? {
+        last = Date()
+        guard !pending.isEmpty else { return nil }
+        defer { pending = "" }
+        return pending
+    }
 }
 
 @Observable
@@ -95,6 +121,19 @@ final class AppState {
     var generatingSession: UUID?
     var isInstallingEnv = false
 
+    // Agents
+    var agents: [Agent] = []
+    var agentOutputs: [UUID: AgentOutput] = [:]
+    var agentPrompt = ""
+    var lastAgentPrompt = ""
+    var agentMode: AgentMode = .independent
+    var agentSynthesize = true
+    var synthSelection: ModelSelection?
+    var synthOutput = AgentOutput()
+    var isRunningAgents = false
+    var agentProgress: (done: Int, total: Int) = (0, 0)
+    var agentColumns = 0  // 0 = automatic
+
     // Blind arena: hide model names in Compare until you vote.
     var compareBlind = false
     var compareRevealed = false
@@ -150,10 +189,12 @@ final class AppState {
         loadSessions()
         loadRuns()
         loadBenchmarks()
+        loadAgents()
         if sessions.isEmpty { newChat(select: false) }
         await startServer()
         if serverState == .running {
             await refreshAll()
+            if agents.isEmpty, defaultSelection != nil, let p = AgentTeamPreset.all.first { applyTeam(p) }
             if let first = sessions.first {
                 sidebarSelection = models.isEmpty ? .models : .chat(first.id)
                 if first.selection == nil, let sel = defaultSelection { setSelection(sel, for: first.id) }
@@ -592,12 +633,13 @@ final class AppState {
                 f(&sessions[si].messages[mi])
             }
             var finalStats: GenerationStats?
+            let buffer = TokenBuffer()
             do {
                 for try await ev in api.chat(selection: selection, messages: history, params: params) {
                     switch ev {
                     case .status(let s): update { $0.status = s }
                     case .loaded: update { $0.status = "Thinking..." }; loadedModel = selection.model.name
-                    case .token(let t): update { $0.status = nil; $0.content += t }
+                    case .token(let t): if let chunk = buffer.add(t) { update { $0.status = nil; $0.content += chunk } }
                     case .done(let st): update { $0.stats = st }; finalStats = st
                     case .error(let e): update { $0.error = e }
                     case .score, .result: break
@@ -606,6 +648,7 @@ final class AppState {
             } catch {
                 update { $0.error = Self.describe(error) }
             }
+            if let rest = buffer.flush() { update { $0.content += rest } }
             update { $0.isStreaming = false; $0.status = nil }
             if let st = finalStats { recordRun(model: selection.shortLabel, engine: selection.engine, source: "chat", stats: st) }
             generatingSession = nil
@@ -695,12 +738,13 @@ final class AppState {
                 guard let sel = compareColumns.first(where: { $0.id == col })?.selection else { continue }
                 update { $0.phase = .running; $0.status = "Starting..." }
                 var finalStats: GenerationStats?
+                let buffer = TokenBuffer()
                 do {
                     for try await ev in api.chat(selection: sel, messages: messages, params: params) {
                         switch ev {
                         case .status(let s): update { $0.status = s }
                         case .loaded: update { $0.status = "Thinking..." }; loadedModel = sel.model.name
-                        case .token(let t): update { $0.status = nil; $0.output += t }
+                        case .token(let t): if let chunk = buffer.add(t) { update { $0.status = nil; $0.output += chunk } }
                         case .done(let st): update { $0.stats = st }; finalStats = st
                         case .error(let e): update { $0.error = e }
                         case .score, .result: break
@@ -709,6 +753,7 @@ final class AppState {
                 } catch {
                     update { $0.error = Self.describe(error) }
                 }
+                if let rest = buffer.flush() { update { $0.output += rest } }
                 update { $0.phase = .done; $0.status = nil }
                 if let st = finalStats { recordRun(model: sel.shortLabel, engine: sel.engine, source: "compare", stats: st) }
             }
@@ -764,6 +809,171 @@ final class AppState {
             judgeStatus = nil
             isJudging = false
         }
+    }
+
+    // MARK: Agents
+
+    func applyTeam(_ preset: AgentTeamPreset) {
+        let model = agents.first?.selection ?? defaultSelection
+        agents = preset.agents.enumerated().map { i, a in
+            Agent(name: a.0, icon: a.1, color: i, role: a.2, selection: model, temperature: preset.mode == .chain ? 0.5 : 0.8)
+        }
+        agentMode = preset.mode
+        agentSynthesize = preset.synthesize
+        agentOutputs = [:]
+        synthOutput = AgentOutput()
+        saveAgents()
+    }
+
+    /// One plain agent per installed model, to compare models in the grid.
+    func applyModelShootout() {
+        let picks = selections.filter { $0.engine == "mlx" && Fit.estimate(sizeGb: $0.model.sizeGb, ramGb: ramGb) != .tooBig }
+            .sorted { $0.model.sizeBytes > $1.model.sizeBytes }.prefix(6)
+        agents = picks.enumerated().map { i, sel in
+            Agent(name: sel.shortLabel, icon: "cpu", color: i, role: "You are a helpful, accurate assistant.", selection: sel, temperature: 0.7)
+        }
+        agentMode = .independent
+        agentSynthesize = false
+        agentOutputs = [:]
+        saveAgents()
+    }
+
+    func addAgent() {
+        let i = agents.count
+        agents.append(Agent(name: "Agent \(i + 1)", icon: "person.fill", color: i,
+                            role: "You are a helpful expert. Answer clearly and concretely.",
+                            selection: agents.last?.selection ?? defaultSelection))
+        saveAgents()
+    }
+
+    func duplicateAgent(_ id: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == id }) else { return }
+        var copy = agents[i]
+        copy.id = UUID()
+        copy.name += " 2"
+        copy.color = agents.count
+        agents.insert(copy, at: i + 1)
+        saveAgents()
+    }
+
+    func removeAgent(_ id: UUID) {
+        agents.removeAll { $0.id == id }
+        agentOutputs[id] = nil
+        saveAgents()
+    }
+
+    func runAgents() {
+        let prompt = agentPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !agents.isEmpty, !isRunningAgents else { return }
+        for i in agents.indices where agents[i].selection == nil { agents[i].selection = defaultSelection }
+        guard agents.allSatisfy({ $0.selection != nil }) else { presentError("No model", "Download a model first."); return }
+        isRunningAgents = true
+        lastAgentPrompt = prompt
+        agentPrompt = ""
+        agentOutputs = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, AgentOutput(status: "Waiting...", phase: .waiting)) })
+        synthOutput = AgentOutput(status: agentSynthesize ? "Waits for the team..." : nil, phase: agentSynthesize ? .waiting : .idle)
+        let team = agents
+        var order = team
+        if agentMode == .independent {
+            // Agents sharing a model run back to back so it is loaded only once.
+            let firstSeen = team.map { $0.selection!.id }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            order = firstSeen.flatMap { id in team.filter { $0.selection!.id == id } }
+        }
+        agentProgress = (0, team.count + (agentSynthesize ? 1 : 0))
+        let mode = agentMode
+        let synthesize = agentSynthesize
+        Task {
+            var transcript: [(Agent, String)] = []
+            for agent in order {
+                guard isRunningAgents else { break }
+                var content = prompt
+                if mode == .chain && !transcript.isEmpty {
+                    content += "\n\n---\nContributions so far:\n\n" + transcript.map { "### \($0.0.name)\n\($0.1)" }.joined(separator: "\n\n")
+                    content += "\n---\nNow give your contribution as \(agent.name). Build on, correct or challenge the earlier contributions; don't just repeat them."
+                }
+                let answer = await runAgent(id: agent.id, name: agent.name, role: agent.role, selection: agent.selection!,
+                                            temperature: agent.temperature, content: content) { [weak self] f in
+                    guard let self else { return }
+                    var o = self.agentOutputs[agent.id] ?? AgentOutput()
+                    f(&o)
+                    self.agentOutputs[agent.id] = o
+                }
+                transcript.append((agent, answer))
+                agentProgress.done += 1
+            }
+            if synthesize && isRunningAgents, let lead = synthSelection ?? largestModel {
+                var content = "Original request:\n\(prompt)\n\n---\nYour team's contributions:\n\n"
+                content += transcript.map { "### \($0.0.name)\n\($0.1)" }.joined(separator: "\n\n")
+                content += "\n---\nWrite the single best final answer to the original request. Combine the strongest points, resolve contradictions, and briefly note any important disagreement."
+                _ = await runAgent(id: UUID(), name: "Synthesizer", role: "You are the team lead. You synthesize your team's work into one excellent, well-structured answer.",
+                                   selection: lead, temperature: 0.4, content: content) { [weak self] f in
+                    guard let self else { return }
+                    f(&self.synthOutput)
+                }
+                agentProgress.done += 1
+            } else if synthOutput.phase == .waiting {
+                synthOutput = AgentOutput()
+            }
+            for (id, o) in agentOutputs where o.phase == .waiting {
+                agentOutputs[id] = AgentOutput(status: "Skipped", phase: .idle)
+            }
+            isRunningAgents = false
+        }
+    }
+
+    private func runAgent(id: UUID, name: String, role: String, selection: ModelSelection, temperature: Double,
+                          content: String, update: @escaping (_ f: (inout AgentOutput) -> Void) -> Void) async -> String {
+        var p = params
+        p.systemPrompt = role + "\nYour name is \(name)."
+        p.temperature = temperature
+        update { $0.phase = .running; $0.status = "Starting..."; $0.text = ""; $0.error = nil }
+        var final: GenerationStats?
+        var text = ""
+        let buffer = TokenBuffer()
+        do {
+            for try await ev in api.chat(selection: selection, messages: [ChatMessage(role: "user", content: content)], params: p) {
+                switch ev {
+                case .status(let s): update { $0.status = s }
+                case .loaded: update { $0.status = "Thinking..." }; loadedModel = selection.model.name
+                case .token(let t):
+                    text += t
+                    if let chunk = buffer.add(t) { update { $0.status = nil; $0.text += chunk } }
+                case .done(let st): final = st; update { $0.stats = st }
+                case .error(let e): update { $0.error = e }
+                default: break
+                }
+            }
+        } catch {
+            update { $0.error = Self.describe(error) }
+        }
+        if let rest = buffer.flush() { update { $0.status = nil; $0.text += rest } }
+        update { $0.phase = .done; $0.status = nil }
+        if let st = final { recordRun(model: selection.shortLabel, engine: selection.engine, source: "agents", stats: st) }
+        return splitReasoning(text).answer
+    }
+
+    func stopAgents() {
+        isRunningAgents = false
+        Task { await api.stop() }
+    }
+
+    func exportAgents() {
+        var md = "# Agent run\n\n**Prompt:** \(lastAgentPrompt)\n\n**Mode:** \(agentMode.rawValue)\n\n"
+        for a in agents {
+            md += "## \(a.name) (\(a.selection?.shortLabel ?? "-"))\n\n\(agentOutputs[a.id]?.answer ?? "")\n\n"
+        }
+        if !synthOutput.text.isEmpty { md += "## Final answer (Synthesizer)\n\n\(synthOutput.answer)\n" }
+        save(md, name: "Agent run")
+    }
+
+    private var agentsURL: URL { Self.dataDirectory.appendingPathComponent("agents.json") }
+
+    func saveAgents() {
+        if let d = try? JSONEncoder().encode(agents) { try? d.write(to: agentsURL, options: .atomic) }
+    }
+
+    private func loadAgents() {
+        if let d = try? Data(contentsOf: agentsURL), let a = try? JSONDecoder().decode([Agent].self, from: d) { agents = a }
     }
 
     // MARK: Benchmarks
@@ -857,7 +1067,7 @@ final class AppState {
         save(md, name: "Model comparison")
     }
 
-    private func save(_ text: String, name: String) {
+    func save(_ text: String, name: String) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.nameFieldStringValue = name.replacingOccurrences(of: "/", with: "-").prefix(60) + ".md"

@@ -155,7 +155,7 @@ struct MessageRow: View {
                     MessageContent(text: message.content, isStreaming: message.isStreaming)
                 }
                 if message.isStreaming && !message.content.isEmpty && !splitReasoning(message.content).thinking {
-                    SparkleSpinner()
+                    StreamingCaret()
                 }
                 if let error = message.error {
                     Label(error, systemImage: "exclamationmark.triangle.fill")

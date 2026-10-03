@@ -149,6 +149,84 @@ struct PromptPreset: Identifiable, Hashable {
     ]
 }
 
+// MARK: - Agents
+
+struct Agent: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    var icon: String
+    var color: Int
+    var role: String
+    var selection: ModelSelection?
+    var temperature: Double = 0.7
+}
+
+enum AgentMode: String, Codable, CaseIterable, Identifiable {
+    case independent = "Independent"
+    case chain = "Chain"
+    var id: String { rawValue }
+    var help: String {
+        switch self {
+        case .independent: "Every agent answers the prompt on its own."
+        case .chain: "Agents take turns; each one sees and builds on the earlier answers."
+        }
+    }
+}
+
+struct AgentOutput: Hashable {
+    var text = ""
+    var stats: GenerationStats?
+    var status: String?
+    var error: String?
+    var phase: CompareColumnPhase = .idle
+    var answer: String { splitReasoning(text).answer }
+}
+
+enum CompareColumnPhase: Hashable { case idle, waiting, running, done }
+
+struct AgentTeamPreset: Identifiable {
+    var id: String { name }
+    var name: String
+    var icon: String
+    var summary: String
+    var mode: AgentMode
+    var synthesize: Bool
+    /// name, icon, role
+    var agents: [(String, String, String)]
+
+    static let all: [AgentTeamPreset] = [
+        AgentTeamPreset(name: "Expert panel", icon: "person.3.fill", summary: "Four specialists look at the same question", mode: .independent, synthesize: true, agents: [
+            ("Engineer", "wrench.and.screwdriver.fill", "You are a senior software engineer. Focus on feasibility, architecture, trade-offs and implementation details."),
+            ("Product lead", "lightbulb.fill", "You are an experienced product manager. Focus on user value, scope, priorities and what to build first."),
+            ("Security reviewer", "lock.shield.fill", "You are a security engineer. Identify risks, abuse cases, privacy issues and concrete mitigations."),
+            ("Skeptic", "questionmark.bubble.fill", "You are a constructive skeptic. Challenge assumptions, point out what could go wrong, and suggest how to validate."),
+        ]),
+        AgentTeamPreset(name: "Code review", icon: "chevron.left.forwardslash.chevron.right", summary: "Reviewers with different lenses on your code", mode: .independent, synthesize: true, agents: [
+            ("Architect", "building.columns.fill", "You review code for design, structure, naming and maintainability. Be specific and suggest improved code."),
+            ("Bug hunter", "ant.fill", "You hunt for correctness bugs, edge cases and error handling gaps. Show failing inputs."),
+            ("Performance", "speedometer", "You review code for performance: complexity, allocations, I/O and concurrency. Quantify impact."),
+            ("Readability", "text.book.closed.fill", "You review code for clarity for a new teammate. Suggest simpler, clearer versions."),
+        ]),
+        AgentTeamPreset(name: "Writers' room", icon: "pencil.and.outline", summary: "Draft, edit, fact-check and title, in sequence", mode: .chain, synthesize: false, agents: [
+            ("Storyteller", "book.fill", "You write a vivid, engaging first draft that answers the request."),
+            ("Editor", "scissors", "You edit the previous draft: tighten it, fix flow and tone, and output the improved full text."),
+            ("Fact-checker", "checkmark.seal.fill", "You check the latest draft for factual or logical problems, list them, then output a corrected version."),
+            ("Headline writer", "textformat.size", "You propose five strong titles for the final text and pick the best one, with a one-line reason."),
+        ]),
+        AgentTeamPreset(name: "Debate", icon: "bubble.left.and.bubble.right.fill", summary: "For, against, then a verdict", mode: .chain, synthesize: false, agents: [
+            ("Advocate", "hand.thumbsup.fill", "You argue FOR the proposition as persuasively and honestly as possible, with evidence."),
+            ("Critic", "hand.thumbsdown.fill", "You argue AGAINST the proposition, rebutting the advocate's points directly."),
+            ("Moderator", "scalemass.fill", "You weigh both sides fairly, identify the strongest points of each, and give a reasoned verdict."),
+        ]),
+        AgentTeamPreset(name: "Brainstorm", icon: "sparkles", summary: "Different temperaments generate ideas", mode: .independent, synthesize: true, agents: [
+            ("Visionary", "wand.and.stars", "You propose bold, ambitious, unconventional ideas. Quantity and originality matter."),
+            ("Pragmatist", "hammer.fill", "You propose practical ideas that could be done this month with few resources."),
+            ("Contrarian", "arrow.uturn.left.circle.fill", "You flip the problem around and propose ideas that go against conventional wisdom."),
+            ("Customer", "person.crop.circle.fill", "You think as the end customer: what would genuinely delight you or remove pain?"),
+        ]),
+    ]
+}
+
 // MARK: - App-side types
 
 /// A model plus the engine it should run on.

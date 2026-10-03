@@ -226,6 +226,18 @@ struct MessageContent: View {
     }
 }
 
+/// Blinking block shown at the end of a reply while it streams.
+struct StreamingCaret: View {
+    @State private var on = true
+    var body: some View {
+        RoundedRectangle(cornerRadius: 1.5)
+            .fill(Theme.accent)
+            .frame(width: 8, height: 16)
+            .opacity(on ? 1 : 0.15)
+            .onAppear { withAnimation(.easeInOut(duration: 0.55).repeatForever()) { on = false } }
+    }
+}
+
 struct SparkleSpinner: View {
     var body: some View {
         Image(systemName: "sparkle")

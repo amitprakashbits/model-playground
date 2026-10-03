@@ -167,8 +167,17 @@ CATALOG = [
     ("Frontier (512 GB)", "mlx-community/DeepSeek-R1-0528-4bit", "671B MoE", 377.6, 163840, "mlx", "Full DeepSeek R1, top open reasoning"),
     ("Frontier (512 GB)", "mlx-community/DeepSeek-V3.1-4bit", "671B MoE", 377.6, 163840, "mlx", "Full DeepSeek V3.1"),
     # AirLLM: full-precision models streamed from disk. Prompt is capped at 512 tokens.
-    ("AirLLM", "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "1.1B", 2.20, 2048, "airllm", "Layer-streaming demo (512-token prompt cap)"),
-    ("AirLLM", "garage-bAInd/Platypus2-7B", "7B", 13.5, 4096, "airllm", "Slow disk streaming (512-token prompt cap)"),
+    ("AirLLM", "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "1.1B", 2.20, 2048, "airllm", "Layer-streaming demo, ~0.2 tok/s"),
+    ("AirLLM", "unsloth/Llama-3.2-1B-Instruct", "1B", 2.47, 131072, "airllm", "Meta Llama 3.2, full precision, tested"),
+    ("AirLLM", "HuggingFaceTB/SmolLM2-1.7B-Instruct", "1.7B", 3.4, 8192, "airllm", "Hugging Face SmolLM2, full precision"),
+    ("AirLLM", "unsloth/Llama-3.2-3B-Instruct", "3B", 6.4, 131072, "airllm", "Meta Llama 3.2 3B, full precision"),
+    ("AirLLM", "garage-bAInd/Platypus2-7B", "7B", 13.5, 4096, "airllm", "Platypus2, full precision"),
+    ("AirLLM", "unsloth/mistral-7b-instruct-v0.3", "7B", 14.5, 32768, "airllm", "Mistral 7B v0.3, full precision"),
+    ("AirLLM", "unsloth/Meta-Llama-3.1-8B-Instruct", "8B", 16.1, 131072, "airllm", "Larger than this Mac's RAM, runs by streaming layers"),
+    ("AirLLM", "NousResearch/Hermes-3-Llama-3.1-8B", "8B", 16.1, 131072, "airllm", "Hermes 3, larger than RAM, streams from disk"),
+    ("AirLLM", "unsloth/DeepSeek-R1-Distill-Llama-8B", "8B", 16.1, 131072, "airllm", "R1 reasoning distill, streams from disk"),
+    ("AirLLM", "upstage/SOLAR-10.7B-Instruct-v1.0", "10.7B", 21.5, 4096, "airllm", "SOLAR, streams from disk"),
+    ("AirLLM", "unsloth/Llama-3.3-70B-Instruct", "70B", 141.1, 131072, "airllm", "70B via disk streaming: needs 141 GB of disk, minutes per token"),
 ]
 
 
@@ -364,6 +373,23 @@ def run_convert(job_id: str, source: str, folder: Path, bits: int):
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
 
+def add_tied_lm_head(shards: Path, cfg: dict):
+    """Models with tied embeddings (Llama 3.2, SmolLM) have no lm_head weights, so AirLLM never
+    writes that shard. Recreate it from the embedding shard so generation can run."""
+    import numpy as np
+
+    head = shards / "lm_head.mlx.npz"
+    if head.exists() or not cfg.get("tie_word_embeddings"):
+        return
+    embed = shards / "model.embed_tokens.mlx.npz"
+    if not embed.exists():
+        return
+    with np.load(embed) as data:
+        key = next(k for k in data.files if "embed_tokens" in k)
+        np.savez(head, **{"lm_head.weight": data[key]})
+    (shards / "lm_head.mlx.done").touch()
+
+
 class Worker:
     """Owns the loaded model and runs every MLX/AirLLM call on a single thread."""
 
@@ -425,6 +451,7 @@ class Worker:
             out.put({"type": "status", "message": "AirLLM: preparing layer shards (first run can take minutes)..."})
             self.model = AutoModel.from_pretrained(path)
             self.tokenizer = self.model.tokenizer
+            add_tied_lm_head(Path(self.model.checkpoint_path), read_config(Path(path)) or {})
         else:
             raise ValueError(f"Unknown engine {engine}")
         self.loaded_key = key
