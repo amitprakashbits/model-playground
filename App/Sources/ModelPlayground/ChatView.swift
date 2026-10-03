@@ -51,6 +51,10 @@ struct ChatView: View {
             ChatComposer(sessionId: sessionId, focused: $composerFocused, isGenerating: isGenerating,
                          placeholder: "How can I help you today?")
                 .frame(maxWidth: 700)
+            if session.selection?.engine == "airllm" {
+                Label("Running on AirLLM: about 0.2 tokens per second, prompts capped at 512 tokens", systemImage: "externaldrive")
+                    .font(.caption).foregroundStyle(.purple)
+            }
             if session.selection == nil {
                 Button("Download a model to get started") { state.sidebarSelection = .models }.buttonStyle(.pillProminent)
             } else {
@@ -291,6 +295,12 @@ struct ChatComposer: View {
                 .buttonStyle(.plain)
                 .help("Let reasoning models (Qwen 3 and similar) think before answering")
                 Spacer()
+                if let sel = session?.selection, sel.model.engines.count > 1 {
+                    EngineSwitch(engine: sel.engine) { e in
+                        state.setSelection(ModelSelection(model: sel.model, engine: e), for: sessionId)
+                    }
+                    .disabled(isGenerating)
+                }
                 ModelPicker(selection: session?.selection, style: .plain) { state.setSelection($0, for: sessionId) }
                 if isGenerating {
                     Button(action: state.stopGenerating) {
@@ -329,6 +339,34 @@ struct ChatComposer: View {
     private func send() {
         guard canSend else { return }
         state.send(draft.wrappedValue, in: sessionId)
+    }
+}
+
+/// MLX / AirLLM toggle for models that run on both engines.
+struct EngineSwitch: View {
+    var engine: String
+    var onChange: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment("mlx", "MLX", "bolt.fill", "Fast: whole model in memory")
+            segment("airllm", "AirLLM", "externaldrive", "Streams one layer at a time from disk: low memory, very slow, 512-token prompts")
+        }
+        .padding(2)
+        .background(Theme.surfaceMuted, in: Capsule())
+    }
+
+    private func segment(_ id: String, _ title: String, _ icon: String, _ help: String) -> some View {
+        Button { onChange(id) } label: {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .foregroundStyle(engine == id ? Color.white : Theme.secondaryText)
+                .background(engine == id ? (id == "airllm" ? Color.purple : Color.blue) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }
 

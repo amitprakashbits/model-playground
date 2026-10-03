@@ -220,6 +220,26 @@ enum SelfTest {
         reply = state.sessions.first { $0.id == chat }?.messages.last
         check("stop ends generation early", reply?.stats?.finishReason == "cancelled", reply?.stats?.finishReason ?? "none")
 
+        // AirLLM chat through the engine switch.
+        if let air = state.selections.first(where: { $0.engine == "airllm" && $0.model.name.contains("Llama-3.2-1B") })
+            ?? state.selections.first(where: { $0.engine == "airllm" }) {
+            let airChat = state.newChat(with: ModelSelection(model: air.model, engine: "mlx"))
+            state.setSelection(air, for: airChat)  // what the MLX/AirLLM switch does
+            let saved = state.params
+            state.params.maxTokens = 12
+            state.params.temperature = 0
+            state.send("What is the capital of Japan? One short sentence.", in: airChat)
+            _ = await wait(900) { state.generatingSession == nil }
+            let r = state.sessions.first { $0.id == airChat }?.messages.last
+            check("chat runs on AirLLM", r?.stats?.engine == "airllm" && (r?.content.lowercased().contains("tokyo") ?? false),
+                  "\(air.model.name): \(r?.content.prefix(60) ?? "") \(r?.error ?? "") · \(String(format: "%.2f tok/s, %.1f GB", r?.stats?.tokensPerSecond ?? 0, r?.stats?.peakMemoryGb ?? 0))")
+            state.sidebarSelection = .chat(airChat)
+            await snapshot("03b-chat-airllm")
+            state.params = saved
+        } else {
+            check("chat runs on AirLLM", false, "no AirLLM-capable model installed")
+        }
+
         // Compare.
         state.compareColumns = []
         state.addCompare(qwen)

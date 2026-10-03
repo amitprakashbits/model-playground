@@ -20,6 +20,16 @@ struct SettingsView: View {
                 }
             }
             Section {
+                Picker("Default engine", selection: $state.preferredEngine) {
+                    Text("MLX (fast)").tag("mlx")
+                    Text("AirLLM when the model supports it").tag("airllm")
+                }
+                Text("AirLLM runs full-precision Llama-style models (Llama 3.x, Mistral, TinyLlama, SmolLM2) by streaming one layer at a time from disk. It uses very little memory but generates about 0.2 tokens per second and caps prompts at 512 tokens. You can also switch engines per chat in the message box.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Inference")
+            }
+            Section {
                 LabeledContent("Python") {
                     HStack {
                         Text((state.pythonPath as NSString).abbreviatingWithTildeInPath)

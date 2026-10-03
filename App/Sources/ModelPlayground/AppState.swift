@@ -90,6 +90,10 @@ final class AppState {
     var includeHFCache: Bool = AppState.defaults.object(forKey: "includeHFCache") as? Bool ?? true {
         didSet { Self.defaults.set(includeHFCache, forKey: "includeHFCache"); Task { await refreshModels() } }
     }
+    /// "mlx" or "airllm": the engine used by default when a model supports it.
+    var preferredEngine: String = AppState.defaults.string(forKey: "preferredEngine") ?? "mlx" {
+        didSet { Self.defaults.set(preferredEngine, forKey: "preferredEngine") }
+    }
     var params: GenParams = AppState.loadParams() {
         didSet { if let d = try? JSONEncoder().encode(params) { Self.defaults.set(d, forKey: "params") } }
     }
@@ -427,7 +431,17 @@ final class AppState {
         selections.filter { $0.engine == "mlx" }.max { $0.model.sizeBytes < $1.model.sizeBytes }
     }
 
-    var defaultSelection: ModelSelection? { largestModel ?? selections.first }
+    var defaultSelection: ModelSelection? {
+        if preferredEngine == "airllm", let air = selections.filter({ $0.engine == "airllm" }).max(by: { $0.model.sizeBytes < $1.model.sizeBytes }) {
+            return air
+        }
+        return largestModel ?? selections.first
+    }
+
+    /// The model on its preferred engine, falling back to the first engine it supports.
+    func preferredSelection(for model: LocalModel) -> ModelSelection {
+        ModelSelection(model: model, engine: model.engines.contains(preferredEngine) ? preferredEngine : model.engines[0])
+    }
 
     // MARK: Downloads
 

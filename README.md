@@ -10,7 +10,7 @@ A native macOS app for running, chatting with, comparing and benchmarking open-s
 - **Benchmarks**: a 13-question auto-graded quiz (math, reasoning, knowledge, coding, instruction following, language) and a **long-context needle-in-a-haystack test** (1K to 64K tokens, 3 depths) with heatmaps and speed and memory vs context-length curves.
 - **Leaderboard** across every chat, comparison and benchmark: speed, latency, judge quality, votes, quiz score and reliable context length.
 - **Model library**: about 110 verified models from 0.3 GB to 450 GB (Qwen 3.5/3.6, Qwen3-Next, Gemma 4, Meta Muse Glimmer, Kimi K3 and Kimi Linear, Llama 3/4, DeepSeek R1/V3.1/V4, GLM 4.6, MiniMax M2, Mistral, Phi, gpt-oss and more), each with RAM fit estimates for your Mac, plus Hugging Face search, a choosable models folder and the Hugging Face cache. Full-precision models can be **downloaded and converted to 4-bit MLX** in one click, for example the Kimi K3-distilled Qwen3.5-9B.
-- **Two engines**: [mlx-lm](https://github.com/ml-explore/mlx-lm) (fast, most architectures) and [AirLLM](https://github.com/lyogavin/airllm) (streams full-precision Llama models from disk, so models larger than RAM can run slowly; prompts are capped at 512 tokens).
+- **Two engines**: [mlx-lm](https://github.com/ml-explore/mlx-lm) (fast, most architectures) and [AirLLM](https://github.com/lyogavin/airllm) (streams full-precision Llama models from disk, so models larger than RAM can run slowly; prompts are capped at 512 tokens). Switch engines per chat with the MLX / AirLLM toggle in the message box, or set a default engine in Settings.
 - **Long context controls**: 8-bit or 4-bit KV cache quantization, or a sliding context window.
 
 ## Requirements
@@ -40,7 +40,7 @@ To test one model end to end inside the app (chat, reasoning, document Q&A, benc
 MP_TEST_MODEL=Qwen3.5-9B "build/Model Playground.app/Contents/MacOS/ModelPlayground" --selftest
 ```
 
-`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (28 checks against a real server and real models) and the app's `--selftest` mode (29 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
+`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (28 checks against a real server and real models) and the app's `--selftest` mode (30 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
 
 ## Layout
 

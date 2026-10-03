@@ -142,8 +142,10 @@ struct InstalledList: View {
                 }
             }
             Spacer()
-            Button("Chat") { state.newChat(with: ModelSelection(model: m, engine: m.engines[0])) }
-                .buttonStyle(.pillProminent)
+            Button(m.engines.contains("airllm") && state.preferredEngine == "airllm" ? "Chat (AirLLM)" : "Chat") {
+                state.newChat(with: state.preferredSelection(for: m))
+            }
+            .buttonStyle(.pillProminent)
             Menu {
                 ForEach(m.engines, id: \.self) { e in
                     Button("Chat using \(e == "airllm" ? "AirLLM" : "MLX")") { state.newChat(with: ModelSelection(model: m, engine: e)) }
@@ -307,7 +309,7 @@ struct DownloadButton: View {
         if state.isInstalled(repoId) {
             Button {
                 if let m = state.installedModel(repoId) {
-                    state.newChat(with: ModelSelection(model: m, engine: m.engines[0]))
+                    state.newChat(with: state.preferredSelection(for: m))
                 }
             } label: { Label("Chat", systemImage: "bubble.left") }
                 .buttonStyle(.pill)

@@ -5,7 +5,7 @@ Run on October 02, 2026 on an Apple Silicon Mac with 16 GB of unified memory (ma
 | Suite | Result |
 |---|---|
 | Backend end-to-end (`tests/test_backend_e2e.py`) | **28/28 passed** |
-| App self-test (`ModelPlayground --selftest`) | **29/29 passed** |
+| App self-test (`ModelPlayground --selftest`) | **30/30 passed** |
 | Qwen3.5-9B in-app model test (`MP_TEST_MODEL=Qwen3.5-9B`) | **9/9 passed**, plus benchmarks below |
 | Kimi K3-distilled 9B in-app model test | **9/9 passed**, plus benchmarks below |
 
@@ -81,9 +81,11 @@ Model shootout (one agent per installed model).
 ## AirLLM
 
 AirLLM is available for every unquantized Llama-style model (TinyLlama, Llama 3.x, Mistral, SmolLM2, SOLAR, up to Llama 3.3 70B) and can be
-picked for chats, comparisons and agents. On this Mac it ran Llama 3.2 1B at 0.14–0.2 tok/s with under 2.2 GB of memory, against about
+picked for chats, comparisons and agents. Models that support both engines get an **MLX / AirLLM switch** in the message box, and Settings has a default-engine option. On this Mac it ran Llama 3.2 1B at 0.14–0.2 tok/s with under 2.2 GB of memory, against about
 200 tok/s for the same size of model on MLX. AirLLM is useful when a model does not fit in memory at all; MLX is the default because it is
 roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tokens).
+
+![Chat on AirLLM](screenshots/03b-chat-airllm.png)
 
 ## Bugs found and fixed during testing
 
