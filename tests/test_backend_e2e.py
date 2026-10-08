@@ -251,6 +251,20 @@ def main():
 
         post("/unload", {})
         check("unload frees the model", get("/health")["loaded"] is None)
+
+        # Idle auto-unload gives memory back to the Mac.
+        post("/preload", {"model_path": by_repo[SMALL[0]]["path"]})
+        for _ in range(60):
+            if get("/health")["loaded"]:
+                break
+            time.sleep(0.5)
+        post("/config", {"idle_unload_seconds": 1})
+        for _ in range(60):
+            if get("/health")["loaded"] is None:
+                break
+            time.sleep(1)
+        check("idle model is unloaded automatically", get("/health")["loaded"] is None)
+        post("/config", {"idle_unload_seconds": 300})
     finally:
         proc.terminate()
         proc.wait(timeout=10)

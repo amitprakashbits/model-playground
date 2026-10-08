@@ -5,13 +5,25 @@ struct MarkdownView: View {
     var text: String
     var font: Font = Theme.serif
 
+    /// Prose runs are drawn by one native text view each (fast, selectable across paragraphs);
+    /// code blocks and tables keep their own views with copy buttons.
+    enum Segment { case prose([Block], String), code(String, String), table([[String]]) }
+
+    private var serif: Bool { font == Theme.serif }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(MarkdownCache.blocks(text).enumerated()), id: \.offset) { _, block in
-                view(for: block)
+            ForEach(Array(MarkdownCache.segments(text).enumerated()), id: \.offset) { _, seg in
+                switch seg {
+                case .prose(let blocks, let source):
+                    SelectableText(text: RichTextBuilder.build(blocks, source: source, serif: serif))
+                case .code(let lang, let code):
+                    CodeBlock(language: lang, code: code)
+                case .table(let rows):
+                    TableBlock(rows: rows)
+                }
             }
         }
-        .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -232,6 +244,29 @@ private enum Patterns {
 enum MarkdownCache {
     private static var blockCache: [String: [MarkdownView.Block]] = [:]
     private static var inlineCache: [String: AttributedString] = [:]
+
+    private static var segmentCache: [String: [MarkdownView.Segment]] = [:]
+
+    static func segments(_ text: String) -> [MarkdownView.Segment] {
+        if let hit = segmentCache[text] { return hit }
+        var out: [MarkdownView.Segment] = []
+        var prose: [MarkdownView.Block] = []
+        var n = 0
+        func flush() {
+            if !prose.isEmpty { out.append(.prose(prose, "\(text.hashValue)#\(n)")); n += 1; prose = [] }
+        }
+        for b in blocks(text) {
+            switch b {
+            case .code(let lang, let code): flush(); out.append(.code(lang, code))
+            case .table(let rows): flush(); out.append(.table(rows))
+            default: prose.append(b)
+            }
+        }
+        flush()
+        if segmentCache.count > 400 { segmentCache.removeAll(keepingCapacity: true) }
+        segmentCache[text] = out
+        return out
+    }
 
     static func blocks(_ text: String) -> [MarkdownView.Block] {
         if let hit = blockCache[text] { return hit }

@@ -81,6 +81,9 @@ struct APIClient {
     func tokenize(paths: [String], text: String) async throws -> TokenCounts {
         try await post("tokenize", ["paths": paths, "text": text], timeout: 120)
     }
+    func configure(idleUnloadSeconds: Int) async {
+        _ = try? await post("config", ["idle_unload_seconds": idleUnloadSeconds]) as OK
+    }
     func preload(_ selection: ModelSelection) async {
         _ = try? await post("preload", ["model_path": selection.model.path, "model_name": selection.shortLabel, "engine": selection.engine]) as OK
     }

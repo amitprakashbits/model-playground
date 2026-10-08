@@ -7,7 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if AppState.isSelfTest {
             Task { @MainActor in
-                if ProcessInfo.processInfo.environment["MP_STUDIO"] != nil {
+                if AppState.isDiagnosis {
+                    await SelfTest.runDiagnosis(AppState.shared)
+                } else if ProcessInfo.processInfo.environment["MP_STUDIO"] != nil {
                     await SelfTest.runStudio(AppState.shared)
                 } else if ProcessInfo.processInfo.environment["MP_PERF"] != nil {
                     await SelfTest.runPerf(AppState.shared)

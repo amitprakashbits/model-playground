@@ -20,6 +20,12 @@ struct SettingsView: View {
                 }
             }
             Section {
+                Picker("Free model memory when idle", selection: $state.idleUnloadMinutes) {
+                    Text("After 2 minutes").tag(2)
+                    Text("After 5 minutes").tag(5)
+                    Text("After 15 minutes").tag(15)
+                    Text("Never").tag(0)
+                }
                 Picker("Default engine", selection: $state.preferredEngine) {
                     Text("MLX (fast)").tag("mlx")
                     Text("AirLLM when the model supports it").tag("airllm")

@@ -400,12 +400,25 @@ class Worker:
         self.tokenizer = None
         self.cancel = threading.Event()
         self.busy = False
+        self.last_used = time.time()
+        # Free the model after this many idle seconds (0 = never). On a 16 GB Mac a loaded
+        # model is the biggest memory user; holding it while idle pushes other apps into swap.
+        self.idle_unload_seconds = 300
         self.tokenizers: dict[str, object] = {}
         # Conversation KV cache reused across turns, so follow-ups only process new tokens.
         self.prompt_cache = None
         self.cache_tokens: list[int] = []
         self.cache_key = None
         threading.Thread(target=self.loop, daemon=True).start()
+        threading.Thread(target=self.idle_watch, daemon=True).start()
+
+    def idle_watch(self):
+        while True:
+            time.sleep(15)
+            limit = self.idle_unload_seconds
+            if (limit > 0 and self.loaded_key and not self.busy and self.jobs.empty()
+                    and time.time() - self.last_used > limit):
+                self.submit(lambda out: self.unload(out))
 
     def submit(self, fn, *args) -> queue.Queue:
         out: queue.Queue = queue.Queue()
@@ -422,6 +435,7 @@ class Worker:
                 out.put({"type": "error", "message": friendly_error(e)})
             finally:
                 self.busy = False
+                self.last_used = time.time()
                 out.put(None)
 
     # ---- model lifecycle -------------------------------------------------------------
@@ -1117,6 +1131,16 @@ def tokenize(req: TokenizeRequest):
         except Exception:
             counts[p] = None
     return {"counts": counts, "characters": len(req.text), "words": len(req.text.split())}
+
+
+class ConfigRequest(BaseModel):
+    idle_unload_seconds: int
+
+
+@app.post("/config")
+def config(req: ConfigRequest):
+    worker.idle_unload_seconds = max(0, req.idle_unload_seconds)
+    return {"ok": True, "idle_unload_seconds": worker.idle_unload_seconds}
 
 
 class PreloadRequest(BaseModel):

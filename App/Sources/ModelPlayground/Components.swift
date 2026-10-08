@@ -164,6 +164,19 @@ struct StatsDetail: View {
 // MARK: - Reasoning
 
 struct ReasoningBlock: View {
+    @MainActor private static var cache: [String: NSAttributedString] = [:]
+
+    @MainActor static func attributed(_ s: String) -> NSAttributedString {
+        if let hit = cache[s] { return hit }
+        let p = NSMutableParagraphStyle()
+        p.lineSpacing = 3
+        let a = NSAttributedString(string: s, attributes: [.font: NSFont.systemFont(ofSize: 13), .paragraphStyle: p,
+                                                         .foregroundColor: NSColor(Theme.secondaryText)])
+        if cache.count > 100 { cache.removeAll() }
+        cache[s] = a
+        return a
+    }
+
     var text: String
     var thinking: Bool
     @State private var expanded = false
@@ -193,11 +206,7 @@ struct ReasoningBlock: View {
             .buttonStyle(.plain)
             if expanded {
                 Divider()
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(Theme.secondaryText)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
+                SelectableText(text: Self.attributed(text))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
             }

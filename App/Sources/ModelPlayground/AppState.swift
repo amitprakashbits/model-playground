@@ -86,7 +86,10 @@ final class AppState {
     static let shared = AppState()
 
     static let isSelfTest = CommandLine.arguments.contains("--selftest")
-    private static let defaults: UserDefaults = isSelfTest ? UserDefaults(suiteName: "local.modelplayground.selftest")! : .standard
+    /// Read-only diagnosis of the user's real data and settings (MP_DIAG=1 with --selftest).
+    static let isDiagnosis = isSelfTest && ProcessInfo.processInfo.environment["MP_DIAG"] != nil
+    private static let isolated = isSelfTest && !isDiagnosis
+    private static let defaults: UserDefaults = isolated ? UserDefaults(suiteName: "local.modelplayground.selftest")! : .standard
 
     // MARK: Settings (persisted)
 
@@ -104,6 +107,14 @@ final class AppState {
     var includeHFCache: Bool = AppState.defaults.object(forKey: "includeHFCache") as? Bool ?? true {
         didSet { Self.defaults.set(includeHFCache, forKey: "includeHFCache"); Task { await refreshModels() } }
     }
+    /// Minutes of inactivity after which the engine frees the loaded model (0 = keep it loaded).
+    var idleUnloadMinutes: Int = AppState.defaults.object(forKey: "idleUnloadMinutes") as? Int ?? 5 {
+        didSet {
+            Self.defaults.set(idleUnloadMinutes, forKey: "idleUnloadMinutes")
+            Task { await api.configure(idleUnloadSeconds: idleUnloadMinutes * 60) }
+        }
+    }
+
     /// "mlx" or "airllm": the engine used by default when a model supports it.
     var preferredEngine: String = AppState.defaults.string(forKey: "preferredEngine") ?? "mlx" {
         didSet { Self.defaults.set(preferredEngine, forKey: "preferredEngine") }
@@ -171,7 +182,7 @@ final class AppState {
     }
 
     static var designsFolder: URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(isSelfTest ? "ModelPlayground/designs-selftest" : "ModelPlayground/designs")
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(isolated ? "ModelPlayground/designs-selftest" : "ModelPlayground/designs")
     }
 
     func runStudio() {
@@ -300,7 +311,7 @@ final class AppState {
 
     static var dataDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent(isSelfTest ? "ModelPlayground-SelfTest" : "ModelPlayground", isDirectory: true)
+        let dir = base.appendingPathComponent(isolated ? "ModelPlayground-SelfTest" : "ModelPlayground", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -386,6 +397,7 @@ final class AppState {
             if (try? await api.health()) != nil {
                 serverState = .running
                 log("backend ready")
+                await api.configure(idleUnloadSeconds: idleUnloadMinutes * 60)
                 return
             }
         }
@@ -778,7 +790,9 @@ final class AppState {
     /// Loads the model in the background so the first message doesn't wait for it. MLX only:
     /// AirLLM never keeps a whole model in memory.
     func preload(_ sel: ModelSelection?) {
-        guard let sel, sel.engine == "mlx", serverState == .running, generatingSession == nil,
+        // Preloading a model that doesn't fit in free memory would push the whole Mac into swap.
+        if let s = system, let sel, s.memoryPressured || sel.model.sizeGb > s.availableRamGb + 1 { return }
+        guard !Self.isDiagnosis, let sel, sel.engine == "mlx", serverState == .running, generatingSession == nil,
               !isComparing, !isRunningAgents, !isDesigning, !isBenchmarking else { return }
         Task { await api.preload(sel) }
     }
@@ -1316,6 +1330,7 @@ final class AppState {
     }
 
     func saveSessions() {
+        if Self.isDiagnosis { return }  // diagnosis never writes the user's data
         let clean = sessions.map { s -> ChatSession in
             var s = s
             s.messages = s.messages.map { var m = $0; m.isStreaming = false; m.status = nil; return m }

@@ -231,6 +231,34 @@ enum SelfTest {
         finish()
     }
 
+    /// Opens the user's real data, visits every screen and reports how long each one blocks the
+    /// main thread. Sends nothing and saves nothing. Run with MP_DIAG=1.
+    static func runDiagnosis(_ state: AppState) async {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        await state.boot()
+        print(String(format: "DIAG boot %.1fs, engine=%@, models=%d, chats=%d, runs=%d, agents=%d", CFAbsoluteTimeGetCurrent() - t0,
+                     "\(state.serverState)", state.models.count, state.sessions.count, state.runs.count, state.agents.count))
+        var screens: [(String, SidebarItem)] = [("library", .models), ("compare", .compare), ("agents", .agents),
+                                                ("benchmarks", .benchmarks), ("leaderboard", .leaderboard), ("settings", .settings)]
+        for (i, s) in state.sessions.prefix(4).enumerated() { screens.insert(("chat\(i + 1)", .chat(s.id)), at: i) }
+        state.sidebarSelection = .settings
+        await snapshot("diag-warmup")  // creates the window; not counted
+        for (name, item) in screens {
+            var worst = 0.0
+            var last = CFAbsoluteTimeGetCurrent()
+            let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
+                let now = CFAbsoluteTimeGetCurrent(); worst = max(worst, (now - last - 0.01) * 1000); last = now
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            state.sidebarSelection = item
+            try? await Task.sleep(for: .seconds(1.5))
+            timer.invalidate()
+            print(String(format: "DIAG %-11@ worst freeze %.0f ms", name as NSString, worst))
+            await snapshot("diag-\(name)")
+        }
+        exit(0)  // skip applicationWillTerminate so nothing is saved
+    }
+
     static func run(_ state: AppState) async {
         // Start from a clean slate inside the self-test data folder.
         try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("chats.json"))
@@ -464,7 +492,8 @@ enum SelfTest {
               runs.map { "\($0.model) \($0.needle.filter(\.passed).count)/\($0.needle.count), reliable to \($0.maxReliableContext.map(formatContext) ?? "-")" }.joined(separator: ", "))
         await snapshot("08a-benchmarks")
 
-        // Design studio: one artboard with the design model, sharing the design system tokens.
+        // Design studio (slow: one full page with the design model). Opt in with MP_DESIGN=1.
+        if ProcessInfo.processInfo.environment["MP_DESIGN"] != nil {
         state.studio = DesignSystem(brand: "Orbit", brief: "A habit tracker that helps remote teams build healthy routines.",
                                     style: "Minimal", primaryHex: "#0EA5E9", font: "Inter", radius: 16)
         state.studioArtboards = ["components"]
@@ -480,6 +509,7 @@ enum SelfTest {
               board?.savedPath ?? "not saved")
         try? await Task.sleep(for: .seconds(4))
         await snapshot("07e-studio")
+        }
 
         // Leaderboard and settings.
         check("runs recorded for leaderboard", state.runs.count >= 5, "\(state.runs.count) runs")
