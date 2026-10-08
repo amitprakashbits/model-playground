@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 /// End-to-end self test, run with `ModelPlayground --selftest`.
 /// Drives the real app state against the real backend, renders every screen to PNG
@@ -151,6 +152,84 @@ enum SelfTest {
         finish()
     }
 
+    /// Measures how responsive the main thread (typing, scrolling) stays while a reply streams
+    /// into a long chat. Run with MP_PERF=1.
+    static func runPerf(_ state: AppState) async {
+        try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("chats.json"))
+        await state.boot()
+        guard state.serverState == .running,
+              let model = state.selections.first(where: { $0.engine == "mlx" && $0.model.name.contains("Qwen3-0.6B") }) else {
+            check("perf setup", false, "needs Qwen3-0.6B"); return finish()
+        }
+        // A long chat like a real working session: 10 rich Markdown replies.
+        let sample = (1...6).map { i in
+            "## Section \(i)\n\nHere is a **detailed** answer with `inline code`, a [link](https://example.com) and a list:\n\n- First point about SEO and *structure*\n- Second point with more detail and context\n  continuing on the next line\n- Third point\n\n| Metric | Value |\n|---|---|\n| Speed | Fast |\n| Size | 12 KB |\n\n```swift\nlet x = \(i)\nprint(x)\n```\n\n> A short quote for flavour.\n"
+        }.joined(separator: "\n")
+        let chat = state.newChat(with: model)
+        if let i = state.index(of: chat) {
+            for n in 0..<10 {
+                state.sessions[i].messages.append(ChatMessage(role: "user", content: "Question \(n): explain step \(n) in detail."))
+                state.sessions[i].messages.append(ChatMessage(role: "assistant", content: sample, modelLabel: model.shortLabel))
+            }
+        }
+        state.sidebarSelection = .chat(chat)
+        await snapshot("perf-chat")  // also opens the window so the chat is really rendered
+        state.params = GenParams(temperature: 0.7, maxTokens: 500, thinking: false)
+
+        // Sample main-thread lateness every 10 ms while the reply streams.
+        var lags: [Double] = []
+        var stallLog: [String] = []
+        let start = CFAbsoluteTimeGetCurrent()
+        var last = start
+        let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
+            let now = CFAbsoluteTimeGetCurrent()
+            let lag = max(0, (now - last) - 0.01) * 1000
+            lags.append(lag)
+            if lag > 50 { stallLog.append(String(format: "%.0fms at %.1fs", lag, now - start)) }
+            last = now
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        state.send("Write a long, well-structured markdown guide to technical SEO with headings, lists and a table.", in: chat)
+        _ = await wait(300) { state.generatingSession == nil }
+        timer.invalidate()
+        let reply = state.sessions.first { $0.id == chat }?.messages.last
+        let sorted = lags.sorted()
+        func pct(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] }
+        let stalls = lags.filter { $0 > 50 }.count
+        let busy = lags.reduce(0, +) / 1000
+        let secs = Double(lags.count) * 0.01 + busy
+        let summary = String(format: "p50 %.1f ms, p95 %.1f ms, max %.0f ms, %d stalls over 50 ms, main thread blocked %.0f%% of %.1fs, %d tokens",
+                             pct(0.5), pct(0.95), sorted.last ?? 0, stalls, secs > 0 ? busy / secs * 100 : 0, secs, reply?.stats?.generationTokens ?? 0)
+        print("PERF " + summary)
+        print("STALLS " + stallLog.joined(separator: ", "))
+        check("main thread stays responsive while streaming", pct(0.95) < 25 && stalls < 5, summary)
+        finish()
+    }
+
+    /// Generates real artboards with the design model (MP_STUDIO=1) to judge design quality.
+    static func runStudio(_ state: AppState) async {
+        await state.boot()
+        guard state.serverState == .running else { return finish() }
+        state.studio = DesignSystem(brand: "Orbit", brief: "A habit tracker that helps remote teams build healthy routines together.",
+                                    style: "Minimal", primaryHex: "#0EA5E9", font: "Inter", radius: 16)
+        state.studioArtboards = (ProcessInfo.processInfo.environment["MP_STUDIO"] ?? "landing,pricing")
+            .split(separator: ",").map(String.init)
+        if let name = ProcessInfo.processInfo.environment["MP_STUDIO_MODEL"] {
+            state.studioSelection = state.selections.first { $0.engine == "mlx" && $0.model.name.contains(name) }
+        }
+        state.sidebarSelection = .studio
+        state.runStudio()
+        _ = await wait(3600) { !state.isDesigning }
+        for id in state.studioArtboards {
+            let r = state.studioResults[id]
+            check("artboard \(id)", r?.html != nil && r?.error == nil,
+                  "\((state.studioSelection ?? state.designModel)?.shortLabel ?? "?"): \(r?.html?.count ?? 0) chars, \(r?.stats?.generationTokens ?? 0) tokens, \(String(format: "%.0f", r?.stats?.totalSeconds ?? 0))s, finish=\(r?.stats?.finishReason ?? "-") \(r?.error ?? "") file=\(r?.savedPath ?? "")")
+        }
+        try? await Task.sleep(for: .seconds(5))
+        await snapshot("studio-run")
+        finish()
+    }
+
     static func run(_ state: AppState) async {
         // Start from a clean slate inside the self-test data folder.
         try? FileManager.default.removeItem(at: AppState.dataDirectory.appendingPathComponent("chats.json"))
@@ -220,6 +299,53 @@ enum SelfTest {
         reply = state.sessions.first { $0.id == chat }?.messages.last
         check("stop ends generation early", reply?.stats?.finishReason == "cancelled", reply?.stats?.finishReason ?? "none")
 
+        // Design: the UI designer preset produces a page that opens in the canvas.
+        let designer = judge ?? qwen
+        let designChat = state.newChat(with: designer)
+        let savedParams = state.params
+        state.params.systemPrompt = PromptPreset.all.first { $0.name == "UI designer" }!.prompt
+        state.params.maxTokens = 1800
+        state.params.thinking = false
+        state.sidebarSelection = .chat(designChat)
+        state.send("Design a pricing card for a 'Pro' plan at $12/month with 4 features and a call-to-action button.", in: designChat)
+        _ = await wait(900) { state.generatingSession == nil }
+        let design = state.sessions.first { $0.id == designChat }?.messages.last
+        let html = design.flatMap { extractHTML($0.content) }
+        check("designer reply contains a page", html != nil, "\(html?.count ?? 0) characters of HTML")
+        check("canvas opens automatically", state.canvasHTML != nil && state.canvasHTML == html)
+        _ = await wait(20) { HTMLPreview.lastLoadFinished }
+        try? await Task.sleep(for: .seconds(2))  // let Tailwind (CDN) style the page
+        let rendered = await renderedPreviewStats()
+        check("canvas renders the page", rendered.distinctColors > 8, "\(rendered.distinctColors) distinct colors in the preview")
+        await snapshot("03c-design-canvas")
+        state.canvasHTML = nil
+        state.params = savedParams
+
+        // Edit and resend: the message returns to the composer and later turns are removed.
+        if let userMsg = state.sessions.first(where: { $0.id == designChat })?.messages.first {
+            state.editMessage(userMsg.id, in: designChat)
+            check("edit puts the message back in the composer", (state.drafts[designChat] ?? "").contains("pricing card")
+                  && state.sessions.first { $0.id == designChat }?.messages.isEmpty == true)
+            state.drafts[designChat] = nil
+        }
+
+        // Folder attachment and saved prompts.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mp-folder-test")
+        try? FileManager.default.removeItem(at: folder)
+        try? FileManager.default.createDirectory(at: folder.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: folder.appendingPathComponent("node_modules/pkg"), withIntermediateDirectories: true)
+        try? "print('hello')".write(to: folder.appendingPathComponent("src/app.py"), atomically: true, encoding: .utf8)
+        try? "# Readme".write(to: folder.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try? "ignored".write(to: folder.appendingPathComponent("node_modules/pkg/index.js"), atomically: true, encoding: .utf8)
+        state.attachFolder(folder, to: designChat)
+        let names = (state.pendingAttachments[designChat] ?? []).map(\.name).sorted()
+        check("folder attach reads code and skips dependencies", names == ["README.md", "src/app.py"], names.joined(separator: ", "))
+        state.pendingAttachments[designChat] = nil
+        state.savedPrompts.removeAll { $0 == "selftest prompt" }
+        state.savedPrompts.insert("selftest prompt", at: 0)
+        check("saved prompts persist", (UserDefaults(suiteName: "local.modelplayground.selftest")?.stringArray(forKey: "savedPrompts") ?? []).contains("selftest prompt"))
+        state.savedPrompts.removeAll { $0 == "selftest prompt" }
+
         // AirLLM chat through the engine switch.
         if let air = state.selections.first(where: { $0.engine == "airllm" && $0.model.name.contains("Llama-3.2-1B") })
             ?? state.selections.first(where: { $0.engine == "airllm" }) {
@@ -259,6 +385,8 @@ enum SelfTest {
         await snapshot("05-compare-answers")
         state.compareTab = .stats
         await snapshot("06-compare-stats")
+        state.compareTab = .preview
+        await snapshot("06b-compare-preview")
 
         // Judge.
         state.judgeSelection = judge
@@ -335,6 +463,23 @@ enum SelfTest {
               runs.map { "\($0.model) \($0.needle.filter(\.passed).count)/\($0.needle.count), reliable to \($0.maxReliableContext.map(formatContext) ?? "-")" }.joined(separator: ", "))
         await snapshot("08a-benchmarks")
 
+        // Design studio: one artboard with the design model, sharing the design system tokens.
+        state.studio = DesignSystem(brand: "Orbit", brief: "A habit tracker that helps remote teams build healthy routines.",
+                                    style: "Minimal", primaryHex: "#0EA5E9", font: "Inter", radius: 16)
+        state.studioArtboards = ["components"]
+        state.studioSelection = state.designModel
+        state.sidebarSelection = .studio
+        state.runStudio()
+        _ = await wait(900) { !state.isDesigning }
+        let board = state.studioResults["components"]
+        check("studio generates an artboard", board?.html != nil,
+              "\(state.studioSelection?.shortLabel ?? "?"): \(board?.html?.count ?? 0) chars \(board?.error ?? "")")
+        check("studio injects the shared design system", board?.html?.contains("--brand:#0EA5E9") == true)
+        check("studio saves the page to disk", board?.savedPath.map { FileManager.default.fileExists(atPath: $0) } == true,
+              board?.savedPath ?? "not saved")
+        try? await Task.sleep(for: .seconds(4))
+        await snapshot("07e-studio")
+
         // Leaderboard and settings.
         check("runs recorded for leaderboard", state.runs.count >= 5, "\(state.runs.count) runs")
         check("judged quality reaches leaderboard", state.runs.contains { $0.quality != nil })
@@ -350,6 +495,55 @@ enum SelfTest {
         check("chats persist to disk", decoded?.first { $0.id == chat }?.messages.count == state.sessions.first { $0.id == chat }?.messages.count)
 
         finish()
+    }
+
+    /// Snapshots the live preview web view and counts distinct colors (a blank page has one or two).
+    static func renderedPreviewStats() async -> (distinctColors: Int, Void) {
+        guard let view = HTMLPreview.lastView else { return (0, ()) }
+        let image: NSImage? = await withCheckedContinuation { cont in
+            view.takeSnapshot(with: nil) { img, _ in cont.resume(returning: img) }
+        }
+        guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return (0, ()) }
+        try? rep.representation(using: .png, properties: [:])?.write(to: outDir.appendingPathComponent("03d-canvas-webview.png"))
+        var colors = Set<UInt32>()
+        let stepX = max(1, rep.pixelsWide / 80), stepY = max(1, rep.pixelsHigh / 80)
+        for y in stride(from: 0, to: rep.pixelsHigh, by: stepY) {
+            for x in stride(from: 0, to: rep.pixelsWide, by: stepX) {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                colors.insert(UInt32(c.redComponent * 31) << 10 | UInt32(c.greenComponent * 31) << 5 | UInt32(c.blueComponent * 31))
+            }
+        }
+        return (colors.count, ())
+    }
+
+    /// Web content is drawn in a separate process and is missing from window captures, so each
+    /// visible web view is snapshotted through WebKit and drawn into the screenshot.
+    static func compositeWebViews(onto image: CGImage, window: NSWindow) async -> CGImage {
+        guard let root = window.contentView else { return image }
+        var webViews: [WKWebView] = []
+        func collect(_ v: NSView) {
+            if let wv = v as? WKWebView, !wv.isHiddenOrHasHiddenAncestor, wv.bounds.width > 10 { webViews.append(wv) }
+            v.subviews.forEach(collect)
+        }
+        collect(root)
+        guard !webViews.isEmpty else { return image }
+        let scale = CGFloat(image.width) / window.frame.width
+        guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        for wv in webViews {
+            let snap: NSImage? = await withCheckedContinuation { cont in wv.takeSnapshot(with: nil) { img, _ in cont.resume(returning: img) } }
+            guard let cg = snap?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+            // Window frame coordinates have their origin at the bottom left, like the bitmap context.
+            let r = wv.convert(wv.bounds, to: nil)
+            let titlebar = window.frame.height - (window.contentView?.frame.height ?? window.frame.height)
+            _ = titlebar
+            ctx.saveGState()
+            ctx.clip(to: CGRect(x: r.minX * scale, y: r.minY * scale, width: r.width * scale, height: r.height * scale))
+            ctx.draw(cg, in: CGRect(x: r.minX * scale, y: r.minY * scale, width: r.width * scale, height: r.height * scale))
+            ctx.restoreGState()
+        }
+        return ctx.makeImage() ?? image
     }
 
     static func finish() {
@@ -388,7 +582,8 @@ enum SelfTest {
             let capture = unsafeBitCast(sym, to: CaptureFn.self)
             // .optionIncludingWindow, .boundsIgnoreFraming | .bestResolution
             if let image = capture(.null, 1 << 3, UInt32(w.windowNumber), (1 << 0) | (1 << 3))?.takeRetainedValue() {
-                try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: url)
+                let composed = await compositeWebViews(onto: image, window: w)
+                try? NSBitmapImageRep(cgImage: composed).representation(using: .png, properties: [:])?.write(to: url)
                 return
             }
         }

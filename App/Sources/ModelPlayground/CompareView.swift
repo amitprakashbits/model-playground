@@ -17,6 +17,7 @@ struct CompareView: View {
                 } else {
                     switch state.compareTab {
                     case .answers: AnswersGrid()
+                    case .preview: PreviewGrid()
                     case .stats: CompareStats()
                     case .quality: CompareQuality()
                     }
@@ -71,7 +72,7 @@ struct CompareView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 260)
+            .frame(width: 340)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -247,6 +248,62 @@ struct CompareColumnView: View {
             Text(title).font(.caption2).foregroundStyle(Theme.secondaryText)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Preview
+
+/// Renders each model's generated page side by side, for judging designs.
+struct PreviewGrid: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(Array(state.compareColumns.enumerated()), id: \.element.id) { i, col in
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        Circle().fill(Theme.seriesColor(i)).frame(width: 9, height: 9)
+                        Text(state.displayName(col)).font(.headline).lineLimit(1)
+                        Spacer()
+                        if col.isBest { Image(systemName: "star.fill").foregroundStyle(.yellow) }
+                        if let html = extractHTML(col.output) {
+                            Button { state.canvasHTML = html; if let id = state.sessions.first?.id { state.sidebarSelection = .chat(id) } } label: {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Open large in the canvas")
+                        }
+                        if col.phase == .done {
+                            Button { state.markBest(col.id) } label: {
+                                Image(systemName: col.isBest ? "star.fill" : "star").foregroundStyle(col.isBest ? .yellow : Theme.secondaryText)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Vote: best design")
+                        }
+                    }
+                    .padding(12)
+                    Divider()
+                    Group {
+                        if let html = extractHTML(col.output), col.phase == .done {
+                            HTMLPreview(html: html)
+                        } else if col.phase == .running || col.phase == .waiting {
+                            VStack(spacing: 8) { SparkleSpinner(); Text(col.phase == .running ? "Generating..." : "Waiting...").foregroundStyle(Theme.secondaryText) }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            Text(col.output.isEmpty ? "No output yet" : "No HTML in this answer.\nTry the UI designer preset.")
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(Theme.secondaryText)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(6)
+                }
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(col.isBest ? Color.yellow.opacity(0.8) : Theme.border, lineWidth: col.isBest ? 2 : 1))
+            }
+        }
+        .padding(16)
     }
 }
 

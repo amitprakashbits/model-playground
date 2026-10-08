@@ -11,15 +11,25 @@ struct ChatView: View {
     private var isGenerating: Bool { state.generatingSession == sessionId }
 
     var body: some View {
-        Group {
-            if let session {
-                if session.messages.isEmpty {
-                    welcome(session)
-                } else {
-                    conversation(session)
+        HStack(spacing: 0) {
+            Group {
+                if let session {
+                    if session.messages.isEmpty {
+                        welcome(session)
+                    } else {
+                        conversation(session)
+                    }
                 }
             }
+            .frame(minWidth: 420)
+            if let html = state.canvasHTML {
+                Divider()
+                CanvasPane(html: html)
+                    .frame(minWidth: 380, idealWidth: 620, maxWidth: .infinity)
+                    .transition(.move(edge: .trailing))
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: state.canvasHTML != nil)
         .background(Theme.background)
         .navigationTitle(session?.messages.isEmpty == false ? (session?.title ?? "") : "")
         .toolbar {
@@ -29,6 +39,11 @@ struct ChatView: View {
                     .disabled(session?.messages.isEmpty ?? true)
                 Button { state.newChat(with: session?.selection) } label: { Label("New Chat", systemImage: "square.and.pencil") }
                     .help("New chat (⌘N)")
+                Button {
+                    if state.canvasHTML != nil { state.canvasHTML = nil }
+                    else { state.canvasHTML = session?.messages.reversed().lazy.compactMap { extractHTML($0.content) }.first ?? Self.emptyCanvas }
+                } label: { Label("Canvas", systemImage: state.canvasHTML == nil ? "rectangle.righthalf.inset.filled" : "rectangle.righthalf.inset.filled.arrow.right") }
+                    .help("Show or hide the design canvas")
                 Button { showInspector.toggle() } label: { Label("Generation Settings", systemImage: "slider.horizontal.3") }
                     .help("Generation settings")
             }
@@ -36,8 +51,13 @@ struct ChatView: View {
         .inspector(isPresented: $showInspector) {
             ParamsForm().inspectorColumnWidth(min: 270, ideal: 300, max: 380)
         }
-        .onAppear { composerFocused = true }
+        .onAppear {
+            composerFocused = true
+            state.preload(session?.selection)
+        }
     }
+
+    static let emptyCanvas = "<html><body style='font-family:-apple-system;display:grid;place-items:center;height:100vh;margin:0;color:#888;background:#faf9f5'><div style='text-align:center'><div style='font-size:42px'>🎨</div><p>Ask for a page, screen or component and it renders here.<br>Tip: pick the <b>UI designer</b> preset in settings.</p></div></body></html>"
 
     // MARK: Welcome
 
@@ -48,7 +68,7 @@ struct ChatView: View {
                 Image(systemName: "sparkle").font(.system(size: 30)).foregroundStyle(Theme.accent)
                 Text(greeting).font(Theme.greeting).foregroundStyle(Theme.text)
             }
-            ChatComposer(sessionId: sessionId, focused: $composerFocused, isGenerating: isGenerating,
+            ChatComposer(sessionId: sessionId, focused: $composerFocused, isGenerating: isGenerating, selection: session.selection,
                          placeholder: "How can I help you today?")
                 .frame(maxWidth: 700)
             if session.selection?.engine == "airllm" {
@@ -87,7 +107,9 @@ struct ChatView: View {
                     ForEach(session.messages) { m in
                         MessageRow(message: m, isLast: m.id == session.messages.last?.id,
                                    canRegenerate: !isGenerating && state.generatingSession == nil,
-                                   regenerate: { state.regenerate(in: sessionId) })
+                                   regenerate: { state.regenerate(in: sessionId) },
+                                   edit: { state.editMessage(m.id, in: sessionId); composerFocused = true })
+                            .equatable()
                             .id(m.id)
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -103,7 +125,7 @@ struct ChatView: View {
             .onChange(of: session.messages.last?.content) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: session.messages.count) { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
             .safeAreaInset(edge: .bottom) {
-                ChatComposer(sessionId: sessionId, focused: $composerFocused, isGenerating: isGenerating,
+                ChatComposer(sessionId: sessionId, focused: $composerFocused, isGenerating: isGenerating, selection: session.selection,
                              placeholder: "Reply to \(session.selection?.shortLabel ?? "the model")...")
                     .frame(maxWidth: 780)
                     .padding(.horizontal, 32)
@@ -120,18 +142,32 @@ struct ChatView: View {
 
 // MARK: - Messages
 
-struct MessageRow: View {
+struct MessageRow: View, Equatable {
+    /// Rows only re-render when their own message changes, not on every streamed token elsewhere.
+    nonisolated static func == (a: MessageRow, b: MessageRow) -> Bool {
+        a.message == b.message && a.isLast == b.isLast && a.canRegenerate == b.canRegenerate
+    }
+
+    @Environment(AppState.self) private var state
     var message: ChatMessage
     var isLast: Bool
     var canRegenerate: Bool
     var regenerate: () -> Void
+    var edit: () -> Void = {}
     @State private var hovering = false
     @State private var copied = false
 
     var body: some View {
         if message.role == "user" {
-            HStack {
+            HStack(alignment: .top) {
                 Spacer(minLength: 120)
+                if hovering && canRegenerate {
+                    Button(action: edit) { Image(systemName: "pencil") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(Theme.secondaryText)
+                        .help("Edit and resend from here")
+                        .padding(.top, 10)
+                }
                 VStack(alignment: .trailing, spacing: 6) {
                     if !message.attachments.isEmpty {
                         AttachmentChips(attachments: message.attachments)
@@ -147,6 +183,7 @@ struct MessageRow: View {
                     }
                 }
             }
+            .onHover { hovering = $0 }
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 if let status = message.status, message.content.isEmpty {
@@ -170,24 +207,37 @@ struct MessageRow: View {
                         .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if !message.isStreaming {
-                    actions.opacity(hovering || isLast ? 1 : 0)
+                    actions.opacity(hovering || isLast ? 1 : 0.45)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .onHover { hovering = $0 }
+            .contextMenu {
+                Button("Copy Reply", action: copyReply)
+                Button("Copy as Markdown") { copyToPasteboard(message.content) }
+                if let html = extractHTML(message.content) {
+                    Button("Copy HTML") { copyToPasteboard(html) }
+                }
+            }
         }
+    }
+
+    private func copyReply() {
+        copyToPasteboard(splitReasoning(message.content).answer)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { copied = false }
     }
 
     private var actions: some View {
         HStack(spacing: 12) {
-            Button {
-                copyToPasteboard(splitReasoning(message.content).answer)
-                copied = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { copied = false }
-            } label: {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            Button(action: copyReply) {
+                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
             }
-            .help("Copy")
+            .help("Copy the reply (without the thought process)")
+            if let html = extractHTML(message.content) {
+                Button { state.canvasHTML = html } label: { Label("Preview", systemImage: "eye") }
+                    .help("Open the generated page in the canvas")
+            }
             if isLast {
                 Button(action: regenerate) { Image(systemName: "arrow.counterclockwise") }
                     .disabled(!canRegenerate)
@@ -242,17 +292,18 @@ struct ChatComposer: View {
     var sessionId: UUID
     var focused: FocusState<Bool>.Binding
     var isGenerating: Bool
+    /// Passed in rather than read from `state.sessions`, so streamed tokens don't re-render the composer.
+    var selection: ModelSelection?
     var placeholder: String
     @State private var dropTargeted = false
+    /// Typing stays local to this view; shared state is only touched on send or when leaving the chat.
+    @State private var text = ""
 
-    private var session: ChatSession? { state.sessions.first { $0.id == sessionId } }
-    private var draft: Binding<String> {
-        Binding(get: { state.drafts[sessionId] ?? "" }, set: { state.drafts[sessionId] = $0 })
-    }
+    private var draft: Binding<String> { $text }
     private var attachments: [Attachment] { state.pendingAttachments[sessionId] ?? [] }
     private var canSend: Bool {
-        session?.selection != nil && state.generatingSession == nil
-            && (!draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
+        selection != nil && state.generatingSession == nil
+            && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
     var body: some View {
@@ -272,14 +323,49 @@ struct ChatComposer: View {
                 .padding(.horizontal, 4)
                 .padding(.top, 2)
             HStack(spacing: 8) {
-                Button { state.pickAttachments(for: sessionId) } label: {
+                Menu {
+                    Button { state.pickAttachments(for: sessionId) } label: { Label("Attach files...", systemImage: "doc") }
+                    Button { state.pickFolder(for: sessionId) } label: { Label("Attach folder...", systemImage: "folder") }
+                } label: {
                     Image(systemName: "paperclip").font(.system(size: 14, weight: .medium))
                         .frame(width: 30, height: 30)
                         .overlay(Circle().stroke(Theme.border))
                 }
+                .menuStyle(.button)
                 .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .foregroundStyle(Theme.secondaryText)
-                .help("Attach files (text, code, Markdown, PDF). You can also drop files here.")
+                .help("Attach files or a whole folder (text, code, Markdown, PDF). You can also drop files here.")
+                Menu {
+                    if state.savedPrompts.isEmpty { Text("No saved prompts yet") }
+                    ForEach(state.savedPrompts, id: \.self) { p in
+                        Button(String(p.prefix(70))) { state.drafts[sessionId] = p }
+                    }
+                    Divider()
+                    Button("Save Current Prompt") {
+                        let d = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !d.isEmpty && !state.savedPrompts.contains(d) { state.savedPrompts.insert(d, at: 0) }
+                    }
+                    .disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if !state.savedPrompts.isEmpty {
+                        Menu("Delete") {
+                            ForEach(state.savedPrompts, id: \.self) { p in
+                                Button(String(p.prefix(70))) { state.savedPrompts.removeAll { $0 == p } }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "bookmark").font(.system(size: 13, weight: .medium))
+                        .frame(width: 30, height: 30)
+                        .overlay(Circle().stroke(Theme.border))
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .foregroundStyle(Theme.secondaryText)
+                .help("Saved prompts")
                 Button { state.params.thinking.toggle() } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "brain")
@@ -295,13 +381,13 @@ struct ChatComposer: View {
                 .buttonStyle(.plain)
                 .help("Let reasoning models (Qwen 3 and similar) think before answering")
                 Spacer()
-                if let sel = session?.selection, sel.model.engines.count > 1 {
+                if let sel = selection, sel.model.engines.count > 1 {
                     EngineSwitch(engine: sel.engine) { e in
                         state.setSelection(ModelSelection(model: sel.model, engine: e), for: sessionId)
                     }
                     .disabled(isGenerating)
                 }
-                ModelPicker(selection: session?.selection, style: .plain) { state.setSelection($0, for: sessionId) }
+                ModelPicker(selection: selection, style: .plain) { state.setSelection($0, for: sessionId) }
                 if isGenerating {
                     Button(action: state.stopGenerating) {
                         Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
@@ -334,11 +420,20 @@ struct ChatComposer: View {
             }
             return true
         }
+        .onAppear { text = state.drafts[sessionId] ?? "" }
+        // Suggestion chips, edit-and-resend and saved prompts fill the box through `drafts`.
+        .onChange(of: state.drafts[sessionId]) { _, new in
+            if let new, new != text { text = new }
+        }
+        .onDisappear { state.drafts[sessionId] = text.isEmpty ? nil : text }
     }
 
     private func send() {
         guard canSend else { return }
-        state.send(draft.wrappedValue, in: sessionId)
+        let message = text
+        text = ""
+        state.drafts[sessionId] = nil
+        state.send(message, in: sessionId)
     }
 }
 
@@ -374,6 +469,7 @@ struct SuggestionChips: View {
     var pick: (String) -> Void
 
     private let items: [(String, String, String)] = [
+        ("paintbrush.pointed", "Design", "Design a modern landing page for a local AI app called Model Playground: hero, three feature cards, pricing and footer. One self-contained HTML file with Tailwind."),
         ("pencil.line", "Write", "Write a short, warm thank-you note to a colleague who helped me ship a project."),
         ("graduationcap", "Learn", "Explain how attention in transformers works, with a simple analogy."),
         ("chevron.left.forwardslash.chevron.right", "Code", "Write a Swift function that debounces a closure, with a usage example."),

@@ -9,7 +9,7 @@ enum ServerState: Equatable {
 }
 
 enum CompareTab: String, CaseIterable, Identifiable {
-    case answers = "Answers", stats = "Stats", quality = "Quality"
+    case answers = "Answers", preview = "Preview", stats = "Stats", quality = "Quality"
     var id: String { rawValue }
 }
 
@@ -17,6 +17,7 @@ enum SidebarItem: Hashable {
     case chat(UUID)
     case compare
     case agents
+    case studio
     case benchmarks
     case leaderboard
     case models
@@ -47,13 +48,26 @@ struct CompareColumn: Identifiable, Hashable {
 final class TokenBuffer {
     private var pending = ""
     private var last = Date.distantPast
-    private let interval: TimeInterval
+    private var streamed = 0
+    private let fixed: TimeInterval?
 
-    init(interval: TimeInterval = 0.08) { self.interval = interval }
+    /// With no fixed interval, updates slow down as the reply grows: re-laying out a long reply
+    /// is the main cost of streaming, while short replies still appear word by word.
+    init(interval: TimeInterval? = nil) { self.fixed = interval }
+
+    private var interval: TimeInterval {
+        if let fixed { return fixed }
+        switch streamed {
+        case ..<1_500: return 0.06
+        case ..<6_000: return 0.15
+        default: return 0.25
+        }
+    }
 
     /// Returns text to apply now, or nil while still buffering.
     func add(_ t: String) -> String? {
         pending += t
+        streamed += t.count
         guard Date().timeIntervalSince(last) >= interval else { return nil }
         return flush()
     }
@@ -125,6 +139,110 @@ final class AppState {
     var generatingSession: UUID?
     var isInstallingEnv = false
 
+    // Design canvas: the page currently shown next to the chat.
+    var canvasHTML: String?
+
+    // Saved prompts
+    var savedPrompts: [String] = AppState.defaults.stringArray(forKey: "savedPrompts") ?? [] {
+        didSet { Self.defaults.set(savedPrompts, forKey: "savedPrompts") }
+    }
+
+    // Design studio
+    var studio: DesignSystem = AppState.loadStudio() {
+        didSet { if let d = try? JSONEncoder().encode(studio) { Self.defaults.set(d, forKey: "studio") } }
+    }
+    var studioArtboards: [String] = ["landing", "pricing", "dashboard", "components"]
+    var studioResults: [String: ArtboardResult] = [:]
+    var studioSelection: ModelSelection?
+    var isDesigning = false
+    var studioZoom: Double = 0.36
+
+    private static func loadStudio() -> DesignSystem {
+        if let d = defaults.data(forKey: "studio"), let s = try? JSONDecoder().decode(DesignSystem.self, from: d) { return s }
+        return DesignSystem()
+    }
+
+    /// Prefers an installed design-tuned model (WEBGEN / UIGEN), then the largest model.
+    var designModel: ModelSelection? {
+        let tuned = ["WEBGEN", "UIGEN", "OmniCoder"]
+        return selections.first { sel in
+            sel.engine == "mlx" && tuned.contains { sel.model.name.localizedCaseInsensitiveContains($0) }
+        } ?? largestModel
+    }
+
+    static var designsFolder: URL {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(isSelfTest ? "ModelPlayground/designs-selftest" : "ModelPlayground/designs")
+    }
+
+    func runStudio() {
+        guard !isDesigning, !studioArtboards.isEmpty, let model = studioSelection ?? designModel else { return }
+        isDesigning = true
+        let system = studio
+        let boards = Artboard.all.filter { studioArtboards.contains($0.id) }
+        for b in boards { studioResults[b.id] = ArtboardResult(status: "Queued", phase: .waiting) }
+        let folder = Self.designsFolder.appendingPathComponent(system.slug)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        Task {
+            for board in boards {
+                guard isDesigning else { break }
+                @MainActor func update(_ f: (inout ArtboardResult) -> Void) {
+                    var r = studioResults[board.id] ?? ArtboardResult()
+                    f(&r)
+                    studioResults[board.id] = r
+                }
+                update { $0.phase = .running; $0.status = "Starting..." }
+                var p = params
+                p.systemPrompt = PromptPreset.all.first { $0.name == "UI designer" }!.prompt + "\n\n" + system.promptSpec
+                p.temperature = 0.6
+                p.maxTokens = max(params.maxTokens, 8000)
+                p.thinking = false
+                let ask = "Product: \(system.brief)\n\nDesign \(board.brief) for \(system.brand). Reply with one complete HTML file in a ```html block."
+                let buffer = TokenBuffer(interval: 0.25)
+                var final: GenerationStats?
+                do {
+                    for try await ev in api.chat(selection: model, messages: [ChatMessage(role: "user", content: ask)], params: p) {
+                        switch ev {
+                        case .status(let s): update { $0.status = s }
+                        case .loaded: update { $0.status = "Designing..." }; loadedModel = model.model.name
+                        case .token(let t): if let c = buffer.add(t) { update { $0.text += c; $0.status = "Designing... \($0.text.count / 1000)K characters" } }
+                        case .done(let st): final = st; update { $0.stats = st }
+                        case .error(let e): update { $0.error = e }
+                        default: break
+                        }
+                    }
+                } catch {
+                    update { $0.error = Self.describe(error) }
+                }
+                if let rest = buffer.flush() { update { $0.text += rest } }
+                update { r in
+                    r.phase = .done
+                    r.status = nil
+                    if r.stats?.finishReason == "length" {
+                        r.error = "Hit the token limit, so the page may be incomplete. Try fewer sections or a larger limit."
+                    }
+                    if let html = extractHTML(r.text) {
+                        // Guarantee the shared design system, even if the model drifted from it.
+                        let page = injectIntoHead(html.range(of: "<head", options: .caseInsensitive) == nil
+                                                  ? "<!DOCTYPE html><html><head></head><body>\(html)</body></html>" : html,
+                                                  system.headInjection + previewSafetyCSS)
+                        r.html = page
+                        let file = folder.appendingPathComponent("\(board.id).html")
+                        if (try? page.write(to: file, atomically: true, encoding: .utf8)) != nil { r.savedPath = file.path }
+                    } else if r.error == nil {
+                        r.error = "The model didn't return HTML. Try a design model (WEBGEN, UIGEN) or a larger model."
+                    }
+                }
+                if let st = final { recordRun(model: model.shortLabel, engine: model.engine, source: "studio", stats: st) }
+            }
+            isDesigning = false
+        }
+    }
+
+    func stopStudio() {
+        isDesigning = false
+        Task { await api.stop() }
+    }
+
     // Agents
     var agents: [Agent] = []
     var agentOutputs: [UUID: AgentOutput] = [:]
@@ -189,7 +307,21 @@ final class AppState {
 
     // MARK: Lifecycle
 
+    private var systemMonitor: Task<Void, Never>?
+
+    /// Refreshes memory and disk figures periodically so the memory warning stays current.
+    private func startSystemMonitor() {
+        guard systemMonitor == nil, !Self.isSelfTest else { return }
+        systemMonitor = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if serverState == .running, let s = try? await api.system(folder: modelsFolder), s != system { system = s }
+            }
+        }
+    }
+
     func boot() async {
+        startSystemMonitor()
         loadSessions()
         loadRuns()
         loadBenchmarks()
@@ -550,6 +682,44 @@ final class AppState {
         }
     }
 
+    static let textExtensions: Set<String> = ["txt", "md", "markdown", "swift", "py", "js", "ts", "tsx", "jsx", "json", "yaml", "yml",
+        "toml", "html", "css", "scss", "go", "rs", "java", "kt", "c", "h", "cpp", "hpp", "m", "rb", "php", "sh", "zsh", "sql",
+        "xml", "csv", "ini", "cfg", "env", "gradle", "vue", "svelte", "dart", "lua", "r", "jl", "ex", "exs", "cs", "fs", "pdf"]
+
+    /// Attaches the text files in a folder (recursively), skipping build output and dependencies.
+    func pickFolder(for sessionId: UUID) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Attach a folder: its text and code files are added to your message"
+        guard panel.runModal() == .OK, let root = panel.url else { return }
+        attachFolder(root, to: sessionId)
+    }
+
+    func attachFolder(_ folder: URL, to sessionId: UUID) {
+        // Resolve symlinks (for example /var -> /private/var) so relative paths are computed correctly.
+        let root = folder.resolvingSymlinksInPath()
+        let skip: Set<String> = ["node_modules", ".git", "build", "dist", ".build", "DerivedData", "Pods", "venv", ".venv", "__pycache__", "target"]
+        var files: [Attachment] = []
+        var total = 0
+        let limit = 600_000
+        let fm = FileManager.default
+        if let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey], options: [.skipsHiddenFiles]) {
+            for case let url as URL in walker {
+                if skip.contains(url.lastPathComponent) { walker.skipDescendants(); continue }
+                guard Self.textExtensions.contains(url.pathExtension.lowercased()),
+                      var att = try? Self.readAttachment(url) else { continue }
+                let full = url.resolvingSymlinksInPath().path
+                att.name = full.hasPrefix(root.path + "/") ? String(full.dropFirst(root.path.count + 1)) : url.lastPathComponent
+                if total + att.content.count > limit { break }
+                total += att.content.count
+                files.append(att)
+            }
+        }
+        if files.isEmpty { presentError("Nothing to attach", "No text or code files were found in \(root.lastPathComponent)."); return }
+        pendingAttachments[sessionId, default: []].append(contentsOf: files)
+    }
+
     static func readAttachment(_ url: URL) throws -> Attachment {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         if url.pathExtension.lowercased() == "pdf" {
@@ -602,6 +772,15 @@ final class AppState {
         guard let i = index(of: id) else { return }
         sessions[i].selection = sel
         saveSessions()
+        preload(sel)
+    }
+
+    /// Loads the model in the background so the first message doesn't wait for it. MLX only:
+    /// AirLLM never keeps a whole model in memory.
+    func preload(_ sel: ModelSelection?) {
+        guard let sel, sel.engine == "mlx", serverState == .running, generatingSession == nil,
+              !isComparing, !isRunningAgents, !isDesigning, !isBenchmarking else { return }
+        Task { await api.preload(sel) }
     }
 
     func index(of id: UUID) -> Int? { sessions.firstIndex { $0.id == id } }
@@ -618,6 +797,17 @@ final class AppState {
         pendingAttachments[sessionId] = nil
         drafts[sessionId] = nil
         runAssistant(sessionId: sessionId, selection: sel)
+    }
+
+    /// Puts a sent message back in the composer and removes it and everything after it.
+    func editMessage(_ messageId: UUID, in sessionId: UUID) {
+        guard generatingSession == nil, let i = index(of: sessionId),
+              let mi = sessions[i].messages.firstIndex(where: { $0.id == messageId }) else { return }
+        let m = sessions[i].messages[mi]
+        sessions[i].messages.removeSubrange(mi...)
+        drafts[sessionId] = m.content
+        pendingAttachments[sessionId] = m.attachments.isEmpty ? nil : m.attachments
+        saveSessions()
     }
 
     func regenerate(in sessionId: UUID) {
@@ -664,6 +854,10 @@ final class AppState {
             }
             if let rest = buffer.flush() { update { $0.content += rest } }
             update { $0.isStreaming = false; $0.status = nil }
+            if case .chat(let current) = sidebarSelection, current == sessionId,
+               let si = index(of: sessionId), let html = sessions[si].messages.last.flatMap({ extractHTML($0.content) }) {
+                canvasHTML = html  // show generated pages right away
+            }
             if let st = finalStats { recordRun(model: selection.shortLabel, engine: selection.engine, source: "chat", stats: st) }
             generatingSession = nil
             saveSessions()

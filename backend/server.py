@@ -401,6 +401,10 @@ class Worker:
         self.cancel = threading.Event()
         self.busy = False
         self.tokenizers: dict[str, object] = {}
+        # Conversation KV cache reused across turns, so follow-ups only process new tokens.
+        self.prompt_cache = None
+        self.cache_tokens: list[int] = []
+        self.cache_key = None
         threading.Thread(target=self.loop, daemon=True).start()
 
     def submit(self, fn, *args) -> queue.Queue:
@@ -422,7 +426,13 @@ class Worker:
 
     # ---- model lifecycle -------------------------------------------------------------
 
+    def reset_cache(self):
+        self.prompt_cache = None
+        self.cache_tokens = []
+        self.cache_key = None
+
     def unload(self, out=None):
+        self.reset_cache()
         self.model = None
         self.tokenizer = None
         self.loaded_key = None
@@ -439,7 +449,7 @@ class Worker:
         key = (engine, path)
         if self.loaded_key == key:
             return
-        self.unload()
+        self.unload()  # also drops the conversation cache
         label = name or Path(path).name
         out.put({"type": "status", "message": f"Loading {label}..."})
         t0 = time.time()
@@ -491,12 +501,39 @@ class Worker:
             # model only ever emits the closing tag. Emit the opening tag so clients can fold it.
             emit("<think>\n")
         if req.engine == "mlx":
-            _, stats = self._generate_mlx(req, prompt, emit)
+            _, stats = self._generate_mlx(req, prompt, emit, use_cache=True)
         else:
             _, stats = self._generate_airllm(req, prompt, emit)
         out.put({"type": "done", "stats": stats})
 
-    def _generate_mlx(self, req, prompt, emit):
+    def _encode(self, prompt: str) -> list[int]:
+        tok = self.tokenizer
+        bos = getattr(tok, "bos_token", None)
+        add_special = bos is None or not prompt.startswith(bos)
+        return list(tok.encode(prompt, add_special_tokens=add_special))
+
+    def _reusable_cache(self, tokens: list[int], key) -> tuple[object, int]:
+        """Returns a prompt cache and how many leading tokens it already holds."""
+        from mlx_lm.models.cache import can_trim_prompt_cache, make_prompt_cache, trim_prompt_cache
+
+        if self.prompt_cache is not None and self.cache_key == key:
+            n = 0
+            for a, b in zip(self.cache_tokens, tokens):
+                if a != b:
+                    break
+                n += 1
+            n = min(n, len(tokens) - 1)  # always feed at least one new token
+            extra = len(self.cache_tokens) - n
+            if n > 0 and extra == 0:
+                return self.prompt_cache, n
+            if n > 0 and can_trim_prompt_cache(self.prompt_cache):
+                trim_prompt_cache(self.prompt_cache, extra)
+                return self.prompt_cache, n
+        self.prompt_cache = make_prompt_cache(self.model, max_kv_size=key[1] or None)
+        self.cache_key = key
+        return self.prompt_cache, 0
+
+    def _generate_mlx(self, req, prompt, emit, use_cache: bool = False):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -504,27 +541,46 @@ class Worker:
         kwargs = {}
         if req.kv_bits in (4, 8):
             kwargs["kv_bits"] = req.kv_bits
-        elif req.context_limit > 0:
-            # mlx-lm cannot quantize a rotating cache, so the window only applies without kv_bits.
-            kwargs["max_kv_size"] = req.context_limit
+        context_limit = req.context_limit if req.kv_bits not in (4, 8) else 0
+        tokens = self._encode(prompt)
+        reused = 0
+        if use_cache:
+            cache, reused = self._reusable_cache(tokens, (req.kv_bits, context_limit))
+            kwargs["prompt_cache"] = cache
+            feed = tokens[reused:]
+        else:
+            if context_limit > 0:
+                # mlx-lm cannot quantize a rotating cache, so the window only applies without kv_bits.
+                kwargs["max_kv_size"] = context_limit
+            feed = tokens
         t0 = time.time()
         first = None
         last = None
         text = ""
-        for r in stream_generate(self.model, self.tokenizer, prompt, max_tokens=req.max_tokens,
-                                 sampler=sampler, **kwargs):
-            if first is None:
-                first = time.time()
-            if r.text:
-                text += r.text
-                emit(r.text)
-            last = r
-            if self.cancel.is_set():
-                break
+        generated: list[int] = []
+        try:
+            for r in stream_generate(self.model, self.tokenizer, feed, max_tokens=req.max_tokens,
+                                     sampler=sampler, **kwargs):
+                if first is None:
+                    first = time.time()
+                if r.text:
+                    text += r.text
+                    emit(r.text)
+                generated.append(int(r.token))
+                last = r
+                if self.cancel.is_set():
+                    break
+        except Exception:
+            if use_cache:
+                self.reset_cache()
+            raise
+        if use_cache:
+            self.cache_tokens = tokens + generated
         end = time.time()
         return text, {
             "engine": "mlx",
-            "prompt_tokens": last.prompt_tokens if last else 0,
+            "cached_tokens": reused,
+            "prompt_tokens": len(tokens),
             "generation_tokens": last.generation_tokens if last else 0,
             "tokens_per_second": round(last.generation_tps, 2) if last else 0,
             "prompt_tokens_per_second": round(last.prompt_tps, 2) if last else 0,
@@ -833,6 +889,17 @@ def formatk(n: int) -> str:
     return f"{n // 1000}K" if n >= 1000 else str(n)
 
 
+def limit_mlx_cache():
+    """MLX keeps freed GPU buffers for reuse; cap that pool so idle memory goes back to the system.
+    On 16 GB Macs an uncapped pool pushes other apps (and the model itself) into swap."""
+    try:
+        import mlx.core as mx
+        mx.set_cache_limit(512 * 1024 * 1024)
+    except Exception:
+        pass
+
+
+limit_mlx_cache()
 worker = Worker()
 
 
@@ -930,9 +997,12 @@ def system(folder: str = ""):
     vm = psutil.virtual_memory()
     disk_path = folder if folder and os.path.isdir(folder) else str(Path.home())
     du = shutil.disk_usage(disk_path)
+    swap = psutil.swap_memory()
     return {
         "total_ram_gb": round(vm.total / 1e9, 1),
         "available_ram_gb": round(vm.available / 1e9, 1),
+        "swap_used_gb": round(swap.used / 1e9, 1),
+        "memory_percent": vm.percent,
         "free_disk_gb": round(du.free / 1e9, 1),
     }
 
@@ -1047,6 +1117,23 @@ def tokenize(req: TokenizeRequest):
         except Exception:
             counts[p] = None
     return {"counts": counts, "characters": len(req.text), "words": len(req.text.split())}
+
+
+class PreloadRequest(BaseModel):
+    model_path: str
+    model_name: str = ""
+    engine: str = "mlx"
+
+
+@app.post("/preload")
+def preload(req: PreloadRequest):
+    """Loads a model in the background so the first message doesn't wait for it."""
+    if not os.path.isdir(req.model_path):
+        raise HTTPException(404, f"Model folder not found: {req.model_path}")
+    if worker.busy or worker.loaded_key == (req.engine, req.model_path):
+        return {"ok": True, "queued": False}
+    worker.submit(worker.ensure_loaded, req.engine, req.model_path, req.model_name)
+    return {"ok": True, "queued": True}
 
 
 @app.post("/stop")

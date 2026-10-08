@@ -7,7 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if AppState.isSelfTest {
             Task { @MainActor in
-                if let model = ProcessInfo.processInfo.environment["MP_TEST_MODEL"] {
+                if ProcessInfo.processInfo.environment["MP_STUDIO"] != nil {
+                    await SelfTest.runStudio(AppState.shared)
+                } else if ProcessInfo.processInfo.environment["MP_PERF"] != nil {
+                    await SelfTest.runPerf(AppState.shared)
+                } else if let model = ProcessInfo.processInfo.environment["MP_TEST_MODEL"] {
                     await SelfTest.runModel(AppState.shared, needle: model)
                 } else {
                     await SelfTest.run(AppState.shared)
@@ -45,13 +49,14 @@ struct ModelPlaygroundApp: App {
                 Button("New Chat") { state.newChat() }.keyboardShortcut("n")
             }
             CommandMenu("Model") {
+                Button("Design Studio") { state.sidebarSelection = .studio }.keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("Agents") { state.sidebarSelection = .agents }.keyboardShortcut("g")
                 Button("Compare Models") { state.sidebarSelection = .compare }.keyboardShortcut("k")
                 Button("Benchmarks") { state.sidebarSelection = .benchmarks }.keyboardShortcut("u")
                 Button("Leaderboard") { state.sidebarSelection = .leaderboard }.keyboardShortcut("b")
                 Button("Model Library") { state.sidebarSelection = .models }.keyboardShortcut("l")
                 Divider()
-                Button("Stop Generating") { state.stopGenerating(); state.stopCompare(); state.stopBenchmarks(); state.stopAgents() }.keyboardShortcut(".")
+                Button("Stop Generating") { state.stopGenerating(); state.stopCompare(); state.stopBenchmarks(); state.stopAgents(); state.stopStudio() }.keyboardShortcut(".")
                 Button("Unload Model from Memory") { Task { await state.api.unload(); await state.refreshModels() } }
                 Button("Restart Engine") { Task { await state.restartServer() } }
             }

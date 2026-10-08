@@ -7,10 +7,11 @@ struct MarkdownView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(Self.parse(text).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(MarkdownCache.blocks(text).enumerated()), id: \.offset) { _, block in
                 view(for: block)
             }
         }
+        .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -50,10 +51,7 @@ struct MarkdownView: View {
     }
 
     private func inline(_ s: String) -> Text {
-        let attributed = (try? AttributedString(
-            markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(s)
-        return Text(attributed)
+        Text(MarkdownCache.inline(s))
     }
 
     // MARK: Parsing
@@ -106,21 +104,21 @@ struct MarkdownView: View {
             }
             if line.isEmpty { flush(); i += 1; continue }
 
-            if let m = line.firstMatch(of: /^(#{1,6})\s+(.*)$/) {
+            if let m = line.firstMatch(of: Patterns.heading) {
                 flush()
                 blocks.append(.heading(m.1.count, String(m.2)))
-            } else if line.firstMatch(of: /^(-{3,}|\*{3,}|_{3,})$/) != nil {
+            } else if line.firstMatch(of: Patterns.rule) != nil {
                 flush()
                 blocks.append(.rule)
             } else if line.hasPrefix("|") && line.hasSuffix("|") {
                 if !para.isEmpty || !listItems.isEmpty || !quote.isEmpty { flush() }
                 let cells = line.dropFirst().dropLast().split(separator: "|", omittingEmptySubsequences: false)
                     .map { $0.trimmingCharacters(in: .whitespaces) }
-                if !cells.allSatisfy({ $0.firstMatch(of: /^:?-{2,}:?$/) != nil }) { table.append(cells) }
+                if !cells.allSatisfy({ $0.firstMatch(of: Patterns.tableDivider) != nil }) { table.append(cells) }
             } else if line.hasPrefix(">") {
                 if !para.isEmpty || !listItems.isEmpty || !table.isEmpty { flush() }
                 quote.append(String(line.dropFirst()).trimmingCharacters(in: .whitespaces))
-            } else if let m = raw.firstMatch(of: /^(\s*)([-*+]|\d+[.)])\s+(.*)$/) {
+            } else if let m = raw.firstMatch(of: Patterns.listItem) {
                 if !para.isEmpty || !quote.isEmpty || !table.isEmpty { flush() }
                 let ordered = m.2.first?.isNumber ?? false
                 if listItems.isEmpty { listOrdered = ordered }
@@ -149,7 +147,7 @@ struct TableBlock: View {
                     GridRow {
                         ForEach(0..<cols, id: \.self) { c in
                             let cell = c < row.count ? row[c] : ""
-                            Text((try? AttributedString(markdown: cell)) ?? AttributedString(cell))
+                            Text(MarkdownCache.inline(cell))
                                 .font(r == 0 ? .callout.weight(.semibold) : .callout)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
@@ -168,9 +166,15 @@ struct TableBlock: View {
 }
 
 struct CodeBlock: View {
+    @Environment(AppState.self) private var state
     var language: String
     var code: String
     @State private var copied = false
+
+    private var previewable: Bool {
+        ["html", "svg", "htm", "xml"].contains(language.lowercased())
+            || code.range(of: "<html", options: .caseInsensitive) != nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -179,6 +183,13 @@ struct CodeBlock: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(Theme.secondaryText)
                 Spacer()
+                if previewable {
+                    Button { state.canvasHTML = code } label: {
+                        Label("Preview", systemImage: "eye").font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.accent)
+                }
                 Button {
                     copyToPasteboard(code)
                     copied = true
@@ -204,6 +215,39 @@ struct CodeBlock: View {
         }
         .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.border))
+    }
+}
+
+/// Regexes compiled once. Regex literals in a loop were recompiled for every line on every render.
+private enum Patterns {
+    nonisolated(unsafe) static let heading = /^(#{1,6})\s+(.*)$/
+    nonisolated(unsafe) static let rule = /^(-{3,}|\*{3,}|_{3,})$/
+    nonisolated(unsafe) static let tableDivider = /^:?-{2,}:?$/
+    nonisolated(unsafe) static let listItem = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
+}
+
+/// Memoizes parsed Markdown so unchanged messages cost nothing to re-render, and a streaming
+/// message only parses the paragraph that is still growing.
+@MainActor
+enum MarkdownCache {
+    private static var blockCache: [String: [MarkdownView.Block]] = [:]
+    private static var inlineCache: [String: AttributedString] = [:]
+
+    static func blocks(_ text: String) -> [MarkdownView.Block] {
+        if let hit = blockCache[text] { return hit }
+        let parsed = MarkdownView.parse(text)
+        if blockCache.count > 400 { blockCache.removeAll(keepingCapacity: true) }
+        blockCache[text] = parsed
+        return parsed
+    }
+
+    static func inline(_ s: String) -> AttributedString {
+        if let hit = inlineCache[s] { return hit }
+        let attributed = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(s)
+        if inlineCache.count > 4000 { inlineCache.removeAll(keepingCapacity: true) }
+        inlineCache[s] = attributed
+        return attributed
     }
 }
 

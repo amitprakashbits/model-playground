@@ -204,6 +204,7 @@ struct AgentCard: View {
     var index: Int
     var onEdit: () -> Void
     @State private var hovering = false
+    @State private var showPreview = false
 
     private var output: AgentOutput { state.agentOutputs[agent.id] ?? AgentOutput() }
     private var color: Color { Theme.seriesColor(agent.color) }
@@ -242,6 +243,9 @@ struct AgentCard: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 10)
             Divider()
+            if showPreview, let html = extractHTML(output.text), output.phase == .done {
+                HTMLPreview(html: html).frame(height: 340)
+            } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     if let status = output.status, output.text.isEmpty {
@@ -264,6 +268,7 @@ struct AgentCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minHeight: 120, maxHeight: 340)
+            }
             if let st = output.stats {
                 Divider()
                 HStack(spacing: 10) {
@@ -271,6 +276,10 @@ struct AgentCard: View {
                     Label("\(st.generationTokens) tokens", systemImage: "number")
                     Label(String(format: "%.1fs", st.totalSeconds), systemImage: "timer")
                     Spacer()
+                    if extractHTML(output.text) != nil {
+                        Button { showPreview.toggle() } label: { Image(systemName: showPreview ? "text.alignleft" : "eye") }
+                            .buttonStyle(.borderless).help(showPreview ? "Show text" : "Preview the generated page")
+                    }
                     Button { copyToPasteboard(output.answer) } label: { Image(systemName: "doc.on.doc") }
                         .buttonStyle(.borderless).help("Copy answer")
                 }

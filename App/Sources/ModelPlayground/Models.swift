@@ -60,6 +60,11 @@ struct SystemInfo: Codable, Hashable {
     var totalRamGb: Double
     var availableRamGb: Double
     var freeDiskGb: Double
+    var swapUsedGb: Double?
+    var memoryPercent: Double?
+
+    /// True when the Mac is short on memory, so model weights are likely being swapped to disk.
+    var memoryPressured: Bool { availableRamGb < 2.5 || (swapUsedGb ?? 0) > totalRamGb * 0.75 }
 }
 
 struct GenerationStats: Codable, Hashable {
@@ -145,8 +150,99 @@ struct PromptPreset: Identifiable, Hashable {
         PromptPreset(name: "Tutor", icon: "graduationcap", prompt: "You are a patient tutor. Explain step by step, check understanding with a short question at the end, and use simple examples."),
         PromptPreset(name: "Writer", icon: "pencil.line", prompt: "You are a skilled editor and writer. Write clearly and warmly, vary sentence length, and avoid clichés."),
         PromptPreset(name: "Analyst", icon: "chart.bar.doc.horizontal", prompt: "You are a careful analyst. Structure answers with headings and bullet points, state assumptions, and quantify where possible."),
+        PromptPreset(name: "UI designer", icon: "paintbrush.pointed.fill", prompt: "You are a world-class product designer and frontend engineer. When asked for a page, screen or component, reply with ONE complete, self-contained HTML file in a ```html code block. Use Tailwind CSS from https://cdn.tailwindcss.com, a clear visual hierarchy, generous spacing, accessible contrast, real-looking copy, and responsive layout. No external images; use gradients, SVG icons or emoji instead."),
         PromptPreset(name: "Document Q&A", icon: "doc.text.magnifyingglass", prompt: "Answer only from the attached documents. Quote the relevant passage, and say clearly when the documents don't contain the answer."),
     ]
+}
+
+// MARK: - Design studio
+
+struct DesignSystem: Codable, Hashable {
+    var brand = "Lumen"
+    var brief = "A calm, privacy-first notes app that summarizes your notes with on-device AI."
+    var style = "Minimal"
+    var primaryHex = "#6366F1"
+    var font = "Inter"
+    var radius: Double = 14
+
+    static let styles: [(String, String)] = [
+        ("Minimal", "lots of white space, restrained palette, thin borders, subtle shadows"),
+        ("Bold", "large confident typography, strong color blocks, high contrast"),
+        ("Playful", "rounded shapes, bright accents, friendly illustrations made from shapes and emoji"),
+        ("Corporate", "trustworthy, structured grids, neutral grays with the brand color as accent"),
+        ("Dark tech", "dark background, glowing gradients, glass panels, monospace accents"),
+        ("Editorial", "magazine feel, serif headlines, warm off-white background, elegant rules"),
+    ]
+
+    static let fonts: [(String, String, String)] = [
+        // name, CSS stack, Google Fonts family (empty when it is a system font)
+        ("Inter", "'Inter', system-ui, sans-serif", "Inter:wght@400;500;600;700;800"),
+        ("Plus Jakarta Sans", "'Plus Jakarta Sans', system-ui, sans-serif", "Plus+Jakarta+Sans:wght@400;500;600;700;800"),
+        ("Space Grotesk", "'Space Grotesk', system-ui, sans-serif", "Space+Grotesk:wght@400;500;600;700"),
+        ("Fraunces (serif)", "'Fraunces', Georgia, serif", "Fraunces:wght@400;600;700;900"),
+        ("System", "-apple-system, system-ui, sans-serif", ""),
+    ]
+
+    var styleDescription: String { Self.styles.first { $0.0 == style }?.1 ?? "" }
+    var fontStack: String { Self.fonts.first { $0.0 == font }?.1 ?? "system-ui, sans-serif" }
+    var fontFamilyParam: String { Self.fonts.first { $0.0 == font }?.2 ?? "" }
+    var slug: String {
+        let s = brand.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
+        return String(s).split(separator: "-").joined(separator: "-").isEmpty ? "design" : String(s).split(separator: "-").joined(separator: "-")
+    }
+
+    /// Tokens injected into every generated page so all artboards share one design system.
+    var headInjection: String {
+        let fontLink = fontFamilyParam.isEmpty ? "" :
+            "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=\(fontFamilyParam)&display=swap'>"
+        return """
+        \(fontLink)<script src="https://cdn.tailwindcss.com"></script>
+        <script>tailwind.config={theme:{extend:{colors:{brand:{DEFAULT:'\(primaryHex)'}},fontFamily:{sans:[\(fontStack.split(separator: ",").map { "\"\($0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "'", with: ""))\"" }.joined(separator: ","))]},borderRadius:{brand:'\(Int(radius))px'}}}}</script>
+        <style id="mp-design-system">:root{--brand:\(primaryHex);--radius:\(Int(radius))px;--font:\(fontStack)}body{font-family:var(--font)}</style>
+        """
+    }
+
+    var promptSpec: String {
+        """
+        Design system (follow it exactly on every page):
+        - Brand name: \(brand)
+        - Visual style: \(style): \(styleDescription)
+        - Primary color: \(primaryHex). Use the Tailwind classes bg-brand, text-brand, border-brand, ring-brand (and opacity variants such as bg-brand/10) for it; derive neutrals from gray/slate.
+        - Font: \(font). It is already loaded; use font-sans.
+        - Corner radius: \(Int(radius))px. Use the rounded-brand class on cards, buttons and inputs.
+        - All content must be visible without JavaScript: no scroll-triggered reveal animations, nothing starting at opacity 0.
+        - Keep the file focused: aim for under 600 lines.
+        """
+    }
+}
+
+struct Artboard: Identifiable, Hashable {
+    var id: String
+    var title: String
+    var icon: String
+    var brief: String
+    var width: CGFloat = 1280
+    var height: CGFloat = 820
+
+    static let all: [Artboard] = [
+        Artboard(id: "landing", title: "Landing page", icon: "macwindow", brief: "a marketing landing page: top navigation, hero with headline, subheadline and call-to-action, a product mockup made from HTML/CSS, three feature cards, a testimonial, and a footer"),
+        Artboard(id: "pricing", title: "Pricing", icon: "creditcard", brief: "a pricing page with three tiers (Free, Pro highlighted, Team), feature bullets, a monthly/yearly toggle, and a short FAQ"),
+        Artboard(id: "dashboard", title: "Dashboard", icon: "rectangle.3.group", brief: "an app dashboard: left sidebar navigation, header with search and avatar, four KPI cards, a line chart drawn with inline SVG, and a recent-activity table"),
+        Artboard(id: "signin", title: "Sign in", icon: "person.badge.key", brief: "a sign-in screen: split layout with a brand panel on one side and an email/password form with social sign-in buttons on the other"),
+        Artboard(id: "mobile", title: "Mobile app", icon: "iphone", brief: "a mobile app home screen designed for a 390px-wide phone: status area, greeting, content cards, and a bottom tab bar. Center a 390px-wide frame on the page", width: 390, height: 844),
+        Artboard(id: "email", title: "Email", icon: "envelope", brief: "a marketing email newsletter, 600px wide and centered: header with logo, hero image area made with a gradient, two content sections, a call-to-action button and a footer", width: 680, height: 900),
+        Artboard(id: "components", title: "Components", icon: "square.grid.3x3", brief: "a design-system component sheet: color swatches, typography scale, buttons (primary, secondary, ghost, three sizes), text input, select, toggle, checkbox, badges, alerts, a card and a modal preview, each labeled"),
+    ]
+}
+
+struct ArtboardResult: Hashable {
+    var text = ""
+    var html: String?
+    var stats: GenerationStats?
+    var status: String?
+    var error: String?
+    var phase: CompareColumnPhase = .idle
+    var savedPath: String?
 }
 
 // MARK: - Agents

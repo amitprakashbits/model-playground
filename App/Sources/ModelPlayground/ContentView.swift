@@ -32,6 +32,7 @@ struct ContentView: View {
         case .chat(let id): ChatView(sessionId: id).id(id)
         case .compare: CompareView()
         case .agents: AgentsView()
+        case .studio: StudioView()
         case .benchmarks: BenchmarksView()
         case .leaderboard: LeaderboardView()
         case .models, .none: ModelsView()
@@ -109,6 +110,7 @@ struct Sidebar: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    navRow("Design studio", "paintbrush.pointed.fill", .studio, tint: .pink)
                     navRow("Agents", "person.3.fill", .agents, tint: .purple)
                     navRow("Compare models", "rectangle.split.3x1.fill", .compare, tint: .blue)
                     navRow("Benchmarks", "gauge.with.dots.needle.67percent", .benchmarks, tint: .orange)
@@ -207,6 +209,20 @@ struct StatusFooter: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let s = state.system, s.memoryPressured {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Memory is low", systemImage: "memorychip.fill").font(.caption.weight(.semibold))
+                    Text(String(format: "%.1f GB free, %.0f GB in swap. Replies will be slow: try a smaller model or close other apps.",
+                                s.availableRamGb, s.swapUsedGb ?? 0))
+                        .font(.caption2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(.orange)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 10)
+            }
             Divider()
             HStack(spacing: 8) {
                 Circle().fill(color).frame(width: 7, height: 7)

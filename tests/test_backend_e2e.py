@@ -139,6 +139,27 @@ def main():
                          {"role": "user", "content": "What is my name?"}]}) if ev["type"] == "token")
         check("multi-turn context with 8-bit KV cache", "zorblat" in text.lower(), repr(text[-120:]))
 
+        # Speed: a follow-up turn reuses the conversation cache instead of reprocessing the history.
+        doc = " ".join(f"Paragraph {i}: the logistics team reviewed shipment {i * 7}." for i in range(150)) + " The warehouse manager is Priya Raman."
+        turn1 = [{"role": "user", "content": doc + "\n\nSummarize the document in one sentence."}]
+        ev1 = stream("/chat", {"model_path": m["path"], "temperature": 0, "max_tokens": 40, "thinking": False, "messages": turn1})
+        a1 = "".join(e.get("text", "") for e in ev1 if e["type"] == "token")
+        s1 = next(e["stats"] for e in ev1 if e["type"] == "done")
+        turn2 = turn1 + [{"role": "assistant", "content": a1}, {"role": "user", "content": "Who is the warehouse manager? Just the name."}]
+        ev2 = stream("/chat", {"model_path": m["path"], "temperature": 0, "max_tokens": 20, "thinking": False, "messages": turn2})
+        a2 = "".join(e.get("text", "") for e in ev2 if e["type"] == "token")
+        s2 = next(e["stats"] for e in ev2 if e["type"] == "done")
+        check("follow-up reuses the conversation cache", s2["cached_tokens"] > s1["prompt_tokens"] * 0.8 and "priya" in a2.lower(),
+              f"turn 2: {s2['cached_tokens']}/{s2['prompt_tokens']} tokens cached, first token {s2['time_to_first_token']:.2f}s "
+              f"vs {s1['time_to_first_token']:.2f}s on turn 1 -> {a2.strip()!r}")
+        check("preload loads a model ahead of time", post("/preload", {"model_path": by_repo[SMALL[1]]["path"]})["ok"])
+        for _ in range(60):
+            if get("/health")["loaded"] == ["mlx", by_repo[SMALL[1]]["path"]]:
+                break
+            time.sleep(0.5)
+        check("preloaded model is resident", get("/health")["loaded"] == ["mlx", by_repo[SMALL[1]]["path"]])
+        check("system reports memory pressure fields", "swap_used_gb" in get("/system"))
+
         # Token count comparison across tokenizers.
         tk = post("/tokenize", {"paths": [by_repo[r]["path"] for r in SMALL], "text": "The quick brown fox jumps over the lazy dog. " * 20})
         counts = list(tk["counts"].values())
