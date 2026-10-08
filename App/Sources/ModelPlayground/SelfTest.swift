@@ -219,8 +219,9 @@ enum SelfTest {
         }
         state.sidebarSelection = .studio
         state.runStudio()
-        _ = await wait(3600) { !state.isDesigning }
-        for id in state.studioArtboards {
+        let ids = state.studioArtboards
+        _ = await wait(3600) { !state.isDesigning && ids.allSatisfy { state.studioResults[$0]?.phase == .done } }
+        for id in ids {
             let r = state.studioResults[id]
             check("artboard \(id)", r?.html != nil && r?.error == nil,
                   "\((state.studioSelection ?? state.designModel)?.shortLabel ?? "?"): \(r?.html?.count ?? 0) chars, \(r?.stats?.generationTokens ?? 0) tokens, \(String(format: "%.0f", r?.stats?.totalSeconds ?? 0))s, finish=\(r?.stats?.finishReason ?? "-") \(r?.error ?? "") file=\(r?.savedPath ?? "")")
@@ -470,7 +471,7 @@ enum SelfTest {
         state.studioSelection = state.designModel
         state.sidebarSelection = .studio
         state.runStudio()
-        _ = await wait(900) { !state.isDesigning }
+        _ = await wait(900) { !state.isDesigning && state.studioResults["components"]?.phase == .done }
         let board = state.studioResults["components"]
         check("studio generates an artboard", board?.html != nil,
               "\(state.studioSelection?.shortLabel ?? "?"): \(board?.html?.count ?? 0) chars \(board?.error ?? "")")

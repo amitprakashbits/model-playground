@@ -4,9 +4,10 @@ Run on October 02, 2026 on an Apple Silicon Mac with 16 GB of unified memory (ma
 
 | Suite | Result |
 |---|---|
-| Backend end-to-end (`tests/test_backend_e2e.py`) | **28/28 passed** |
-| App self-test (`ModelPlayground --selftest`) | **30/30 passed** |
+| Backend end-to-end (`tests/test_backend_e2e.py`) | **32/32 passed** |
+| App self-test (`ModelPlayground --selftest`) | **39/39 passed** |
 | Qwen3.5-9B in-app model test (`MP_TEST_MODEL=Qwen3.5-9B`) | **9/9 passed**, plus benchmarks below |
+| Speed test (`MP_PERF=1`) | p95 lag 6 ms (was 42 ms), stalls 7 (was 57) |
 | Kimi K3-distilled 9B in-app model test | **9/9 passed**, plus benchmarks below |
 
 Run everything with `./scripts/run_tests.sh`.
@@ -67,6 +68,36 @@ Benchmarks (16K run):
 
 ![Kimi K3-distilled vs Qwen3.5-9B benchmarks](screenshots/kimi-benchmarks.png)
 
+## Speed
+
+Measured by `MP_PERF=1 ModelPlayground --selftest`: a 500-token reply streams into a chat with 20 rich Markdown messages while a
+10 ms timer records how late the main thread runs (that lateness is what you feel as typing lag).
+
+| | Before | After |
+|---|---|---|
+| 95th-percentile main-thread lag | 42 ms | **6 ms** |
+| Stalls over 50 ms | 57 | **7** |
+| Main thread busy | 30% | 17% |
+| Follow-up reply, first token (2.4K-token chat) | 1.15 s | **0.07 s** |
+
+What changed: Markdown regexes are compiled once and parsed results are cached; finished messages no longer re-render while a
+reply streams; the message box keeps its text locally; streaming updates slow down as a reply grows; the engine reuses the
+conversation's KV cache between turns and preloads models when a chat opens; MLX's spare buffer cache is capped at 512 MB.
+The remaining occasional stalls coincided with heavy swapping (25 GB swap in use during testing); the sidebar now warns when
+memory is low.
+
+## Best model for design
+
+[WEBGEN-4B-Preview](https://huggingface.co/Tesslate/WEBGEN-4B-Preview) (Tesslate, Apache-2.0, a Qwen3-4B fine-tune for websites)
+is the design model the Design Studio picks by default. A 6-bit MLX build is 3.3 GB. On this Mac it wrote a full landing page
+(5,145 tokens, about 8 minutes) and a pricing page that share one design system (brand color, Inter, 16 px radius):
+
+| Landing page | Pricing page |
+|---|---|
+| ![WEBGEN landing](screenshots/webgen-landing.png) | ![WEBGEN pricing](screenshots/webgen-pricing.png) |
+
+![Design studio](screenshots/07e-studio.png)
+
 ## Agents board
 
 One prompt, a team of agents in a grid. Each agent has its own role, model and temperature. **Independent** mode runs every agent on the prompt
@@ -97,6 +128,10 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 - **Compare looked broken with no models selected** (send button disabled with no explanation). It now pre-fills installed models and explains what's missing.
 - **Dropped connections failed downloads.** A TLS reset aborted a download; downloads now retry up to 4 times and resume.
 - **A self-test check rejected correct answers.** The bat-and-ball check flagged "110 cents" in worked steps; it now checks the first amount the answer states.
+- **Typing lagged while replies streamed.** See Speed above.
+- **Replies could not be selected or copied.** The new Markdown renderer had no text selection; replies are now selectable, with a Copy button and a right-click menu.
+- **Generated pages looked blank.** Pages that hide content until a scroll script runs stayed invisible when the reply was cut off; previews now reveal such content, the design prompt forbids it, and Studio pages get 8,000 tokens.
+- **A leftover download server from testing ran for 4 days.** Stopped; it is not part of the app.
 - **Streaming made Compare lag.** Every token re-rendered every column; updates are now batched to about 12 per second in chat, compare and agents.
 - **AirLLM failed on Llama 3.2** (`load_npz` error). Models with tied embeddings have no `lm_head` weights, so AirLLM never wrote that shard; the engine now generates it from the embedding shard.
 - **Sidebar selection used the system blue.** It now uses the app's own accent with hover states.
@@ -109,20 +144,22 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 | ✅ | health identifies the app | {'ok': True, 'app': 'model-playground', 'version': '1.0.0', 'busy': False, 'loaded': None} |
 | ✅ | catalog has 60+ models | 123 entries |
 | ✅ | catalog entries have context sizes |  |
-| ✅ | system info | {'total_ram_gb': 17.2, 'available_ram_gb': 2.7, 'free_disk_gb': 116.4} |
+| ✅ | system info | {'total_ram_gb': 17.2, 'available_ram_gb': 2.6, 'swap_used_gb': 25.3, 'memory_percent': 84.6, 'free_disk_gb': 96.9} |
 | ✅ | downloads finish | mlx-community/Qwen3-0.6B-4bit=done ; mlx-community/LFM2.5-1.2B-Instruct-4bit=done  |
 | ✅ | download progress reaches total |  |
-| ✅ | downloaded models are listed | Qwen/Qwen2.5-0.5B-Instruct-mlx-4bit, khazarai/Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, mlx-community/LFM2.5-1.2B-Instruct-4bit, mlx-community/Qwen3-0.6B-4bit, mlx |
+| ✅ | downloaded models are listed | NickMystic/WEBGEN-4B-Preview-mlx-6Bit, Qwen/Qwen2.5-0.5B-Instruct-mlx-4bit, khazarai/Qwen3.5-9B-Kimi-k3-Distilled-mlx-4bit, mlx-community/LFM2.5-1.2B-Instruct-4 |
 | ✅ | hf cache models are listed |  |
 | ✅ | chat Qwen3-0.6B-4bit streams an answer | '12 multiplied by 12 is 144.' |
-| ✅ | chat Qwen3-0.6B-4bit reports stats | 69.47 tok/s, 14 tokens |
+| ✅ | chat Qwen3-0.6B-4bit reports stats | 229.66 tok/s, 14 tokens |
 | ✅ | chat LFM2.5-1.2B-Instruct-4bit streams an answer | 'The result of 12 multiplied by 12 is 144.' |
-| ✅ | chat LFM2.5-1.2B-Instruct-4bit reports stats | 63.69 tok/s, 14 tokens |
+| ✅ | chat LFM2.5-1.2B-Instruct-4bit reports stats | 189.33 tok/s, 14 tokens |
 | ✅ | multi-turn context with 8-bit KV cache | "Hello! I'm Zorblat. If you have any questions or need help, feel free to ask! 😊" |
+| ✅ | follow-up reuses the conversation cache | turn 2: 2306/2370 tokens cached, first token 0.07s vs 1.15s on turn 1 -> 'Priya Raman' |
+| ✅ | preload loads a model ahead of time |  |
+| ✅ | preloaded model is resident |  |
+| ✅ | system reports memory pressure fields |  |
 | ✅ | tokenize counts per model | {'/Users/amitprakash/ModelPlayground/models/mlx-community__Qwen3-0.6B-4bit': 201, '/Users/amitprakash/ModelPlayground/models/mlx-community__LFM2.5-1.2B-Instruct |
-| ✅ | judge returns a score per answer | [{"accuracy": 10.0, "helpfulness": 10.0, "clarity": 10.0, "overall": 10.0, "verdict": "12 * 12 is 144.", "raw": "```json
-{
-  \"reference\": \"12 multiplied by |
+| ✅ | judge returns a score per answer | [{"accuracy": 10.0, "helpfulness": 10.0, "clarity": 10.0, "overall": 10.0, "verdict": "12 * 12 is 144.", "raw": "```json\n{\n  \"reference\": \"12 multiplied by |
 | ✅ | judge scores are in range | a=10.0, b=10.0 |
 | ✅ | eval grades the quiz | 6/13 passed |
 | ✅ | eval runs the context test | 1K tokens, depth 50%=pass, 2K tokens, depth 50%=pass |
@@ -131,7 +168,7 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 | ✅ | converted model is listed as quantized | Qwen2.5-0.5B-Instruct-mlx-4bit |
 | ✅ | converted model answers | 'Paris' |
 | ✅ | Llama 3.2 offers the AirLLM engine |  |
-| ✅ | AirLLM runs Llama 3.2 | tied embeddings)  ('Tokyo is the capital of Japan.', 0.14 tok/s, peak 1.93 GB |
+| ✅ | AirLLM runs Llama 3.2 | tied embeddings)  ('Tokyo is the capital of Japan.', 0.15 tok/s, peak 1.47 GB |
 | ✅ | stop cancels generation | 6 tokens |
 | ✅ | worker is idle after stop |  |
 | ✅ | missing model returns 404 |  |
@@ -141,15 +178,22 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 
 | | Check | Detail |
 |---|---|---|
-| ✅ | engine starts on a free port | port 65184 |
+| ✅ | engine starts on a free port | port 55127 |
 | ✅ | catalog loads | 123 models |
 | ✅ | installed models are found | LFM2.5-1.2B-Instruct-4bit, Llama-3.2-1B-Instruct, Qwen2.5-0.5B-Instruct-mlx-4bit, Qwen3-0.6B-4bit, Qwen3-4B-Instruct-2507-4bit, Qwen3.5-9B-4bit, Qwen3.5-9B-Kimi |
 | ✅ | chat reply streams | 12 multiplied by 12 is 144. |
-| ✅ | chat reply has stats | 240 tok/s, 14 tokens |
+| ✅ | chat reply has stats | 233 tok/s, 14 tokens |
 | ✅ | attachment is added |  |
 | ✅ | model reads the attached file | PERIWINKLE |
 | ✅ | regenerate replaces the last reply |  |
 | ✅ | stop ends generation early | cancelled |
+| ✅ | designer reply contains a page | 2798 characters of HTML |
+| ✅ | canvas opens automatically |  |
+| ✅ | canvas renders the page | 39 distinct colors in the preview |
+| ✅ | edit puts the message back in the composer |  |
+| ✅ | folder attach reads code and skips dependencies | README.md, src/app.py |
+| ✅ | saved prompts persist |  |
+| ✅ | chat runs on AirLLM | Llama-3.2-1B-Instruct: Tokyo is the capital of Japan.  · 0.21 tok/s, 1.5 GB |
 | ✅ | compare runs every model | Qwen3-0.6B: 218 chars ; LFM2.5-1.2B: 202 chars ; Qwen3-4B-2507: 272 chars  |
 | ✅ | compare collects stats |  |
 | ✅ | tokenizer comparison counts prompt tokens | Qwen3-0.6B=15, LFM2.5-1.2B=15, Qwen3-4B-2507=15 |
@@ -159,15 +203,18 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 | ✅ | blind mode hides model names | Model A, Model B, Model C |
 | ✅ | voting reveals names |  |
 | ✅ | team preset loads agents | Visionary, Pragmatist, Contrarian, Customer |
-| ✅ | every agent answers in the grid  (**Name:** *Nocturne* |  |
+| ✅ | every agent answers in the grid  (**Eyes of the Future** |  |
 | ✅ | agents record stats |  |
-| ✅ | synthesizer merges the answers  (**Name:** *Nocturne* |  |
+| ✅ | synthesizer merges the answers  (**Name:** RoboBrew |  |
 | ✅ | progress reaches the end | 5/5 |
-| ✅ | chain mode runs every agent in order | Advocate: Remote work off \| Critic: While remote work \| Moderator: While the advo |
+| ✅ | chain mode runs every agent in order | Advocate: Remote work is  \| Critic: While remote work \| Moderator: The debate ove |
 | ✅ | benchmarks run for each model | LFM2.5-1.2B err=none; Qwen3-0.6B err=none |
 | ✅ | quiz is graded | LFM2.5-1.2B 4/13, Qwen3-0.6B 6/13 |
 | ✅ | context test covers lengths and depths | LFM2.5-1.2B 9/9, reliable to 4K, Qwen3-0.6B 8/9, reliable to - |
-| ✅ | runs recorded for leaderboard | 19 runs |
+| ✅ | studio generates an artboard | WEBGEN-4B-Preview-mlx-6Bit: 34796 chars Hit the token limit, so the page may be incomplete. Try fewer sections or a larger limit. |
+| ✅ | studio injects the shared design system |  |
+| ✅ | studio saves the page to disk | /Users/amitprakash/ModelPlayground/designs-selftest/orbit/components.html |
+| ✅ | runs recorded for leaderboard | 22 runs |
 | ✅ | judged quality reaches leaderboard |  |
 | ✅ | chats persist to disk |  |
 

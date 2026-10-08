@@ -5,6 +5,7 @@
 A native macOS app for running, chatting with, comparing and benchmarking open-source LLMs locally on Apple Silicon.
 
 - **Chat** in a Claude-style interface: streaming replies, Markdown with tables and code blocks, collapsible reasoning for thinking models, file and PDF attachments (drag and drop), system prompt presets, chat history with search, export to Markdown.
+- **Design studio**: describe a product, pick a design system (style, brand color, font, radius) and generate matching pages (landing, pricing, dashboard, sign-in, mobile, email, components) on one canvas. Uses the WEBGEN design model when installed and saves every page as HTML. Chats also get a live HTML canvas.
 - **Agents board**: one prompt, a grid of agents with their own roles, models and temperatures. Independent or chain mode, an optional synthesizer that merges the answers, and team presets (expert panel, code review, writers' room, debate, brainstorm, model shootout).
 - **Compare** up to 4 models on one prompt: answers side by side, charts for speed, time to first token, output tokens, tokenizer efficiency, total time and memory, plus an **AI judge** that scores accuracy, helpfulness and clarity. **Blind mode** hides and shuffles names until you vote.
 - **Benchmarks**: a 13-question auto-graded quiz (math, reasoning, knowledge, coding, instruction following, language) and a **long-context needle-in-a-haystack test** (1K to 64K tokens, 3 depths) with heatmaps and speed and memory vs context-length curves.
@@ -40,7 +41,7 @@ To test one model end to end inside the app (chat, reasoning, document Q&A, benc
 MP_TEST_MODEL=Qwen3.5-9B "build/Model Playground.app/Contents/MacOS/ModelPlayground" --selftest
 ```
 
-`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (28 checks against a real server and real models) and the app's `--selftest` mode (30 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
+`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (32 checks against a real server and real models) and the app's `--selftest` mode (39 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
 
 ## Layout
 
