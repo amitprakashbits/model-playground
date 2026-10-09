@@ -243,6 +243,29 @@ enum SelfTest {
         for (i, s) in state.sessions.prefix(4).enumerated() { screens.insert(("chat\(i + 1)", .chat(s.id)), at: i) }
         state.sidebarSelection = .settings
         await snapshot("diag-warmup")  // creates the window; not counted
+        if let w = window, let host = w.contentView {
+            print(String(format: "DIAG window %.0fx%.0f, content min height %.0f (memory warning shown: %@)",
+                         w.frame.width, w.frame.height, host.fittingSize.height, (state.system?.memoryPressured ?? false) ? "yes" : "no"))
+            let saved = state.system
+            state.system = nil
+            try? await Task.sleep(for: .milliseconds(400))
+            host.layoutSubtreeIfNeeded()
+            print(String(format: "DIAG without memory warning: content min height %.0f", host.fittingSize.height))
+            state.system = saved
+            for item in [SidebarItem.models, .compare, .agents, .leaderboard] {
+                state.sidebarSelection = item
+                try? await Task.sleep(for: .milliseconds(500))
+                host.layoutSubtreeIfNeeded()
+                print(String(format: "DIAG %@ content min height %.0f", "\(item)", host.fittingSize.height))
+            }
+            if let chat = state.sessions.first {
+                state.sidebarSelection = .chat(chat.id)
+                try? await Task.sleep(for: .milliseconds(500))
+                host.layoutSubtreeIfNeeded()
+                print(String(format: "DIAG chat content min height %.0f", host.fittingSize.height))
+            }
+            exit(0)
+        }
         for (name, item) in screens {
             var worst = 0.0
             var last = CFAbsoluteTimeGetCurrent()
@@ -282,6 +305,14 @@ enum SelfTest {
 
         state.sidebarSelection = .models
         await snapshot("01-library")
+        // Force the low-memory warning on and make sure no view inflates the window's minimum size.
+        let realSystem = state.system
+        state.system = SystemInfo(totalRamGb: 16, availableRamGb: 1.0, freeDiskGb: 100, swapUsedGb: 20, memoryPercent: 95)
+        try? await Task.sleep(for: .milliseconds(500))
+        let minHeight = window?.contentView?.fittingSize.height ?? 0
+        check("layout fits the screen (window minimum height)", minHeight < 700 && (window?.frame.height ?? 0) < 900,
+              String(format: "minimum %.0f pt, window %.0f pt, with the memory warning shown", minHeight, window?.frame.height ?? 0))
+        state.system = realSystem
 
         // Welcome screen.
         let chat = state.newChat(with: qwen)

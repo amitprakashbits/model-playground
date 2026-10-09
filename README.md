@@ -41,7 +41,7 @@ To test one model end to end inside the app (chat, reasoning, document Q&A, benc
 MP_TEST_MODEL=Qwen3.5-9B "build/Model Playground.app/Contents/MacOS/ModelPlayground" --selftest
 ```
 
-`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (33 checks against a real server and real models) and the app's `--selftest` mode (36 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
+`./scripts/run_tests.sh` runs `tests/test_backend_e2e.py` (33 checks against a real server and real models) and the app's `--selftest` mode (37 checks that drive the real app logic: chat, attachments, regenerate, stop, compare, tokenizer counts, judge, blind mode, benchmarks, leaderboard, persistence). It also renders a screenshot of every screen to `build/snapshots`.
 
 ## Layout
 

@@ -210,18 +210,21 @@ struct StatusFooter: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let s = state.system, s.memoryPressured {
-                VStack(alignment: .leading, spacing: 3) {
-                    Label("Memory is low", systemImage: "memorychip.fill").font(.caption.weight(.semibold))
-                    Text(String(format: "%.1f GB free, %.0f GB in swap. Replies will be slow: try a smaller model or close other apps.",
-                                s.availableRamGb, s.swapUsedGb ?? 0))
+                // Fixed line limits: unbounded wrapping here once forced the window taller than the screen.
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Memory is low", systemImage: "memorychip.fill")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Text("Replies will be slow. Use a smaller model or close apps.")
                         .font(.caption2)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(2)
                 }
                 .foregroundStyle(.orange)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                 .padding(.horizontal, 10)
+                .help(String(format: "%.1f GB free, %.0f GB in swap", s.availableRamGb, s.swapUsedGb ?? 0))
             }
             Divider()
             HStack(spacing: 8) {

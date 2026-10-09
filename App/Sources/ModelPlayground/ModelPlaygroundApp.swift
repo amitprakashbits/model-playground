@@ -5,6 +5,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // macOS restores the last window size; if an earlier version left it taller than the
+        // screen, the message box ends up off-screen. Pull every window back inside the screen.
+        for delay in [0.3, 1.0, 2.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { Self.fitWindowsToScreen() }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { _ in
+            Self.fitWindowsToScreen()
+        }
         if AppState.isSelfTest {
             Task { @MainActor in
                 if AppState.isDiagnosis {
@@ -19,6 +27,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await SelfTest.run(AppState.shared)
                 }
             }
+        }
+    }
+
+    static func fitWindowsToScreen() {
+        for window in NSApp.windows {
+            if ProcessInfo.processInfo.environment["MP_DEBUG_WINDOWS"] != nil {
+                FileHandle.standardError.write(Data("window \(window.frame) visible \(window.isVisible) titled \(window.styleMask.contains(.titled)) screen \(window.screen?.visibleFrame ?? .zero) zoomed \(window.isZoomed) min \(window.minSize)\n".utf8))
+            }
+            guard window.isVisible, window.styleMask.contains(.titled),
+                  let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { continue }
+            var frame = window.frame
+            if frame.height > visible.height { frame.size.height = visible.height }
+            if frame.width > visible.width { frame.size.width = visible.width }
+            frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.origin.y, visible.minY), visible.maxY - frame.height)
+            if frame != window.frame { window.setFrame(frame, display: true, animate: false) }
         }
     }
 

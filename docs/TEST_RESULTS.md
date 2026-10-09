@@ -5,7 +5,7 @@ Run on October 02, 2026 on an Apple Silicon Mac with 16 GB of unified memory (ma
 | Suite | Result |
 |---|---|
 | Backend end-to-end (`tests/test_backend_e2e.py`) | **33/33 passed** |
-| App self-test (`ModelPlayground --selftest`) | **36/36 passed** (Design Studio checks are opt-in with `MP_DESIGN=1`) |
+| App self-test (`ModelPlayground --selftest`) | **37/37 passed** (Design Studio checks are opt-in with `MP_DESIGN=1`) |
 | Qwen3.5-9B in-app model test (`MP_TEST_MODEL=Qwen3.5-9B`) | **9/9 passed**, plus benchmarks below |
 | Speed test (`MP_PERF=1`) | worst stall 61 ms (was 815 ms), p95 lag 9 ms (was 42 ms) |
 | Kimi K3-distilled 9B in-app model test | **9/9 passed**, plus benchmarks below |
@@ -129,6 +129,7 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 - **Compare looked broken with no models selected** (send button disabled with no explanation). It now pre-fills installed models and explains what's missing.
 - **Dropped connections failed downloads.** A TLS reset aborted a download; downloads now retry up to 4 times and resume.
 - **A self-test check rejected correct answers.** The bat-and-ball check flagged "110 cents" in worked steps; it now checks the first amount the answer states.
+- **The message box disappeared off-screen.** When memory was low, the sidebar's warning text could wrap without limit, which raised the window's minimum height to 1,220 points (taller than a 14-inch MacBook's screen), so the window extended past the bottom. The warning now has fixed line limits, windows are pulled back onto the screen when they open, and a test forces the warning on and checks the window's minimum height (now 284 points).
 - **Typing lagged while replies streamed.** See Speed above.
 - **Replies could not be selected or copied.** The new Markdown renderer had no text selection; replies are now selectable, with a Copy button and a right-click menu.
 - **Generated pages looked blank.** Pages that hide content until a scroll script runs stayed invisible when the reply was cut off; previews now reveal such content, the design prompt forbids it, and Studio pages get 8,000 tokens.
@@ -180,11 +181,12 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 
 | | Check | Detail |
 |---|---|---|
-| ✅ | engine starts on a free port | port 62991 |
+| ✅ | engine starts on a free port | port 64897 |
 | ✅ | catalog loads | 123 models |
 | ✅ | installed models are found | LFM2.5-1.2B-Instruct-4bit, Llama-3.2-1B-Instruct, Qwen2.5-0.5B-Instruct-mlx-4bit, Qwen3-0.6B-4bit, Qwen3-4B-Instruct-2507-4bit, Qwen3.5-9B-4bit, Qwen3.5-9B-Kimi |
+| ✅ | layout fits the screen | window minimum height)  (minimum 284 pt, window 840 pt, with the memory warning shown |
 | ✅ | chat reply streams | 12 multiplied by 12 is 144. |
-| ✅ | chat reply has stats | 225 tok/s, 14 tokens |
+| ✅ | chat reply has stats | 231 tok/s, 14 tokens |
 | ✅ | attachment is added |  |
 | ✅ | model reads the attached file | PERIWINKLE |
 | ✅ | regenerate replaces the last reply |  |
@@ -195,7 +197,7 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 | ✅ | edit puts the message back in the composer |  |
 | ✅ | folder attach reads code and skips dependencies | README.md, src/app.py |
 | ✅ | saved prompts persist |  |
-| ✅ | chat runs on AirLLM | Llama-3.2-1B-Instruct: Tokyo is the capital of Japan.  · 0.20 tok/s, 1.3 GB |
+| ✅ | chat runs on AirLLM | Llama-3.2-1B-Instruct: Tokyo is the capital of Japan.  · 0.22 tok/s, 1.2 GB |
 | ✅ | compare runs every model | Qwen3-0.6B: 218 chars ; LFM2.5-1.2B: 202 chars ; Qwen3-4B-2507: 272 chars  |
 | ✅ | compare collects stats |  |
 | ✅ | tokenizer comparison counts prompt tokens | Qwen3-0.6B=15, LFM2.5-1.2B=15, Qwen3-4B-2507=15 |
@@ -205,11 +207,11 @@ roughly 1,000× faster and supports long prompts (AirLLM caps prompts at 512 tok
 | ✅ | blind mode hides model names | Model A, Model B, Model C |
 | ✅ | voting reveals names |  |
 | ✅ | team preset loads agents | Visionary, Pragmatist, Contrarian, Customer |
-| ✅ | every agent answers in the grid  (**Name:** *Luminova* |  |
+| ✅ | every agent answers in the grid  (**Elysia Coffee Bar** |  |
 | ✅ | agents record stats |  |
-| ✅ | synthesizer merges the answers  (**Name:** *RoboBean Café* |  |
+| ✅ | synthesizer merges the answers  (**RoboBrew** |  |
 | ✅ | progress reaches the end | 5/5 |
-| ✅ | chain mode runs every agent in order | Advocate: Remote work off \| Critic: While remote work \| Moderator: While remote w |
+| ✅ | chain mode runs every agent in order | Advocate: Remote work off \| Critic: While remote work \| Moderator: The propositio |
 | ✅ | benchmarks run for each model | LFM2.5-1.2B err=none; Qwen3-0.6B err=none |
 | ✅ | quiz is graded | LFM2.5-1.2B 4/13, Qwen3-0.6B 6/13 |
 | ✅ | context test covers lengths and depths | LFM2.5-1.2B 9/9, reliable to 4K, Qwen3-0.6B 8/9, reliable to - |
